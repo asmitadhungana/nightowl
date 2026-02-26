@@ -9,9 +9,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCHEDULE_FILE="${NIGHTOWL_SCHEDULE:-$SCRIPT_DIR/schedule.json}"
+FOCUS_FILE="${NIGHTOWL_FOCUS:-$SCRIPT_DIR/focus.json}"
 LOG_FILE="/var/log/nightowl.log"
 TEST_MODE="${NIGHTOWL_TEST_MODE:-0}"
 NTP_SERVER="pool.ntp.org"
+TARGET_USER="${NIGHTOWL_USER:-asmeedhungana}"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -24,6 +26,36 @@ log() {
     else
         echo "[$timestamp] nightowld: $*"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Check Focus Mode (instant mini-curfew)
+# ---------------------------------------------------------------------------
+is_focus_active() {
+    [[ -f "$FOCUS_FILE" ]] || return 1
+
+    local result
+    result=$(python3 -c "
+import json, datetime
+f = json.load(open('$FOCUS_FILE'))
+if not f.get('active'):
+    print('inactive')
+else:
+    end = datetime.datetime.fromisoformat(f['endTime'].replace('Z','+00:00'))
+    print('active' if datetime.datetime.now(datetime.timezone.utc) < end else 'expired')
+" 2>/dev/null)
+    [[ "$result" == "active" ]]
+}
+
+get_focus_remaining() {
+    python3 -c "
+import json, datetime
+f = json.load(open('$FOCUS_FILE'))
+end = datetime.datetime.fromisoformat(f['endTime'].replace('Z','+00:00'))
+now = datetime.datetime.now(datetime.timezone.utc)
+remaining = int((end - now).total_seconds())
+print(max(0, remaining))
+" 2>/dev/null || echo "0"
 }
 
 # ---------------------------------------------------------------------------
@@ -171,31 +203,43 @@ notify() {
 
 # ---------------------------------------------------------------------------
 # Enforce curfew
+# Args: $1 = "immediate" for no warnings (used by Focus Mode)
 # ---------------------------------------------------------------------------
 enforce_curfew() {
-    log "=== CURFEW ENFORCEMENT ==="
+    local mode="${1:-normal}"
+    log "=== CURFEW ENFORCEMENT ($mode) ==="
 
     if [[ "$TEST_MODE" == "1" ]]; then
-        log "[TEST MODE] Would send 2-minute warning"
-        log "[TEST MODE] Would wait 90 seconds"
-        log "[TEST MODE] Would send 30-second warning"
-        log "[TEST MODE] Would wait 30 seconds"
+        if [[ "$mode" == "immediate" ]]; then
+            log "[TEST MODE] IMMEDIATE shutdown (Focus Mode)"
+        else
+            log "[TEST MODE] Would send 2-minute warning"
+            log "[TEST MODE] Would wait 90 seconds"
+            log "[TEST MODE] Would send 30-second warning"
+            log "[TEST MODE] Would wait 30 seconds"
+        fi
         log "[TEST MODE] Would kill processes and shutdown"
         sleep 5
         return
     fi
 
-    # T-2 minutes warning
-    notify "🦉 NightOwl" "Computer will shut down in 2 minutes. Save your work!"
-    log "Sent 2-minute warning"
-    sleep 90
+    if [[ "$mode" == "immediate" ]]; then
+        # Focus Mode: immediate enforcement, no waiting
+        notify "🦉 NightOwl - FOCUS MODE" "Locking down NOW. See you when it's over."
+        sleep 3
+    else
+        # Regular curfew: 2-minute warning
+        notify "🦉 NightOwl" "Computer will shut down in 2 minutes. Save your work!"
+        log "Sent 2-minute warning"
+        sleep 90
 
-    # T-30 seconds warning
-    notify "🦉 NightOwl - FINAL WARNING" "Shutting down in 30 seconds..."
-    log "Sent 30-second warning"
-    sleep 30
+        # T-30 seconds warning
+        notify "🦉 NightOwl - FINAL WARNING" "Shutting down in 30 seconds..."
+        log "Sent 30-second warning"
+        sleep 30
+    fi
 
-    # T-0: Enforce
+    # Enforce
     log "Force-killing all processes for user: $TARGET_USER"
     killall -u "$TARGET_USER" -9 2>/dev/null || true
     sleep 1
@@ -223,6 +267,17 @@ main() {
     fi
 
     while true; do
+        # Check Focus Mode first (instant mini-curfew)
+        if is_focus_active; then
+            local remaining
+            remaining=$(get_focus_remaining)
+            log "FOCUS MODE: $remaining seconds remaining"
+            enforce_curfew "immediate"
+            sleep 10
+            continue
+        fi
+
+        # Check regular schedule
         if ! read_schedule; then
             sleep 60
             continue
