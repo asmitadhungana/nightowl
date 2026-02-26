@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "schedule": {
+    "start": "23:00",
+    "end": "06:00",
+    "timezone": "Asia/Kathmandu",
+    "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+  },
+  "grace_period_seconds": 30,
+  "warning_seconds": 60,
+  "lock": {
+    "hash": ""
+  },
+  "ntp_server": "pool.ntp.org"
+}

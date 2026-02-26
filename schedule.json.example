@@ -1,0 +1,16 @@
+{
+  "active": false,
+  "lockPeriodDays": 7,
+  "lockStartDate": null,
+  "lockEndDate": null,
+  "days": {
+    "monday":    { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "tuesday":   { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "wednesday": { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "thursday":  { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "friday":    { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "saturday":  { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "sunday":    { "curfewStart": "22:00", "curfewEnd": "06:00" }
+  },
+  "timezone": "Asia/Kathmandu"
+}
