@@ -157,6 +157,7 @@ cmd_install() {
     <key>KeepAlive</key><true/>
     <key>EnvironmentVariables</key><dict>
         <key>NIGHTOWL_SCHEDULE</key><string>$SCRIPT_DIR/schedule.json</string>
+        <key>NIGHTOWL_FOCUS</key><string>$SCRIPT_DIR/focus.json</string>
     </dict>
 </dict>
 </plist>

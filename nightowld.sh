@@ -266,12 +266,18 @@ main() {
         log "*** TEST MODE ACTIVE ***"
     fi
 
+    local loop_count=0
+
     while true; do
+        loop_count=$((loop_count + 1))
+        local current_time
+        current_time=$(date '+%H:%M:%S')
+
         # Check Focus Mode first (instant mini-curfew)
         if is_focus_active; then
             local remaining
             remaining=$(get_focus_remaining)
-            log "FOCUS MODE: $remaining seconds remaining"
+            log "FOCUS MODE ACTIVE: $remaining seconds remaining"
             enforce_curfew "immediate"
             sleep 10
             continue
@@ -279,6 +285,8 @@ main() {
 
         # Check regular schedule
         if ! read_schedule; then
+            # Log idle status every iteration
+            log "[$current_time] Idle — no active schedule or focus mode"
             sleep 60
             continue
         fi
@@ -287,12 +295,12 @@ main() {
         current_min=$(get_current_minutes)
         current_hhmm=$(get_current_hhmm)
 
-        log "Time: ${current_hhmm} ${CURFEW_TZ} | Curfew: ${CURFEW_START}-${CURFEW_END}"
-
         if is_curfew "$current_min"; then
+            log "[$current_hhmm] CURFEW ACTIVE (${CURFEW_START}-${CURFEW_END}) — enforcing"
             enforce_curfew
             sleep 30
         else
+            log "[$current_hhmm] Schedule active, outside curfew (${CURFEW_START}-${CURFEW_END})"
             sleep 60
         fi
     done
