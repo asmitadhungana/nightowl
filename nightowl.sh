@@ -34,11 +34,30 @@ require_root() {
 verify_password() {
     local prompt="${1:-Enter lock password: }"
     [[ -f "$LOCK_PW_FILE" ]] || die "Lock password file not found"
-    local stored
-    stored=$(cat "$LOCK_PW_FILE")
     read -rsp "$prompt" password
     echo
-    [[ "$password" == "$stored" ]] || die "Incorrect password"
+
+    # Verify password via server API (bcrypt comparison)
+    local response
+    response=$(curl -s -X POST http://localhost:${WEB_PORT}/api/verify-password \
+        -H "Content-Type: application/json" \
+        -d "{\"password\": \"$password\"}" 2>/dev/null)
+
+    if [[ -z "$response" ]]; then
+        # Server not running - fall back to Node.js direct verification
+        local result
+        result=$(node -e "
+const bcrypt = require('bcrypt');
+const fs = require('fs');
+const hash = fs.readFileSync('$LOCK_PW_FILE', 'utf8').trim();
+bcrypt.compare('$password', hash).then(r => console.log(r ? 'true' : 'false'));
+" 2>/dev/null)
+        [[ "$result" == "true" ]] || die "Incorrect password"
+    else
+        local valid
+        valid=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('valid', False))" 2>/dev/null)
+        [[ "$valid" == "True" ]] || die "Incorrect password"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -189,7 +208,12 @@ cmd_test() {
     echo -e "${BOLD}NightOwl Test Mode${NC}"
     export NIGHTOWL_TEST_MODE=1
     export NIGHTOWL_SCHEDULE="$SCHEDULE_FILE"
-    timeout 30 bash "$SCRIPT_DIR/nightowld.sh" 2>&1 || true
+    # Run daemon in background and kill after 30 seconds (macOS doesn't have timeout)
+    bash "$SCRIPT_DIR/nightowld.sh" 2>&1 &
+    local pid=$!
+    sleep 30
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
     echo "Test complete."
 }
 

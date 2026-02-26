@@ -24,6 +24,7 @@ async function init() {
     showEdit();
     setupFocus();
   }
+  setupPasswordModal();
 }
 
 // ---------------------------------------------------------------------------
@@ -139,24 +140,66 @@ function setupLockButton() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ days, lockPeriodDays: selectedDays, timezone: 'Asia/Kathmandu' })
     });
-    // Activate directly — server locks it with its own password
+    // Show password modal
+    showPasswordModal();
+  });
+}
+
+function showPasswordModal() {
+  const overlay = document.getElementById('modal-overlay');
+  const input = document.getElementById('modal-password');
+  const errorEl = document.getElementById('modal-error');
+
+  overlay.classList.remove('hidden');
+  input.value = '';
+  errorEl.classList.add('hidden');
+  input.focus();
+}
+
+function hidePasswordModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+}
+
+function setupPasswordModal() {
+  document.getElementById('modal-cancel').addEventListener('click', hidePasswordModal);
+
+  document.getElementById('modal-confirm').addEventListener('click', async () => {
+    const password = document.getElementById('modal-password').value;
+    const errorEl = document.getElementById('modal-error');
+
+    if (!password || password.length < 4) {
+      errorEl.textContent = 'Password must be at least 4 characters';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+
     try {
       const res = await fetch('/api/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({ password })
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Failed to lock');
+        errorEl.textContent = data.error || 'Failed to lock';
+        errorEl.classList.remove('hidden');
         return;
       }
+      hidePasswordModal();
       schedule = data.schedule;
       status = await fetch('/api/status').then(r => r.json());
       document.getElementById('edit-mode').classList.add('hidden');
       showLocked();
     } catch (e) {
-      alert('Connection error');
+      errorEl.textContent = 'Connection error';
+      errorEl.classList.remove('hidden');
+    }
+  });
+
+  // Allow Enter key to submit
+  document.getElementById('modal-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      document.getElementById('modal-confirm').click();
     }
   });
 }

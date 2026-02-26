@@ -19,7 +19,40 @@ NTP_SERVER="pool.ntp.org"
 log() {
     local timestamp
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "[$timestamp] nightowld: $*" >> "$LOG_FILE" 2>/dev/null || echo "[$timestamp] nightowld: $*"
+    if [[ -w "$LOG_FILE" ]] || [[ -w "$(dirname "$LOG_FILE")" ]]; then
+        echo "[$timestamp] nightowld: $*" >> "$LOG_FILE"
+    else
+        echo "[$timestamp] nightowld: $*"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# File ownership management
+# ---------------------------------------------------------------------------
+lock_schedule_file() {
+    if [[ "$EUID" -eq 0 ]] && [[ -f "$SCHEDULE_FILE" ]]; then
+        local current_owner
+        current_owner=$(stat -f "%Su" "$SCHEDULE_FILE" 2>/dev/null || stat -c "%U" "$SCHEDULE_FILE" 2>/dev/null)
+        if [[ "$current_owner" != "root" ]]; then
+            chown root:wheel "$SCHEDULE_FILE" 2>/dev/null || true
+            chmod 644 "$SCHEDULE_FILE" 2>/dev/null || true
+            log "Locked schedule file (now owned by root)"
+        fi
+    fi
+}
+
+unlock_schedule_file() {
+    if [[ "$EUID" -eq 0 ]] && [[ -f "$SCHEDULE_FILE" ]]; then
+        local current_owner user_to_restore
+        current_owner=$(stat -f "%Su" "$SCHEDULE_FILE" 2>/dev/null || stat -c "%U" "$SCHEDULE_FILE" 2>/dev/null)
+        # Get user from schedule or fall back to TARGET_USER or default
+        user_to_restore=$(python3 -c "import json; print(json.load(open('$SCHEDULE_FILE')).get('user', 'asmeedhungana'))" 2>/dev/null || echo "${TARGET_USER:-asmeedhungana}")
+        if [[ "$current_owner" == "root" ]]; then
+            chown "$user_to_restore:staff" "$SCHEDULE_FILE" 2>/dev/null || true
+            chmod 644 "$SCHEDULE_FILE" 2>/dev/null || true
+            log "Unlocked schedule file (restored ownership to $user_to_restore)"
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -33,6 +66,8 @@ read_schedule() {
 
     SCHEDULE_ACTIVE=$(python3 -c "import json; s=json.load(open('$SCHEDULE_FILE')); print('true' if s.get('active') else 'false')")
     if [[ "$SCHEDULE_ACTIVE" != "true" ]]; then
+        # Schedule not active - ensure file is unlocked
+        unlock_schedule_file
         return 1
     fi
 
@@ -49,8 +84,13 @@ else:
 ")
     if [[ "$lock_expired" == "true" ]]; then
         log "Lock period expired — daemon idle"
+        # Lock expired - restore user ownership
+        unlock_schedule_file
         return 1
     fi
+
+    # Active lock - ensure file is locked to root
+    lock_schedule_file
 
     CURFEW_TZ=$(python3 -c "import json; print(json.load(open('$SCHEDULE_FILE')).get('timezone','Asia/Kathmandu'))")
 
@@ -119,18 +159,44 @@ is_curfew() {
 }
 
 # ---------------------------------------------------------------------------
+# macOS Notifications
+# ---------------------------------------------------------------------------
+notify() {
+    local title="$1"
+    local message="$2"
+    # Run as the target user so notification appears on their screen
+    sudo -u "$TARGET_USER" osascript -e "display notification \"$message\" with title \"$title\" sound name \"Submarine\"" 2>/dev/null || true
+    log "Notification: $title - $message"
+}
+
+# ---------------------------------------------------------------------------
 # Enforce curfew
 # ---------------------------------------------------------------------------
 enforce_curfew() {
     log "=== CURFEW ENFORCEMENT ==="
-    log "Force-killing all processes for user: $TARGET_USER"
 
     if [[ "$TEST_MODE" == "1" ]]; then
-        log "[TEST MODE] Would kill and shutdown"
-        sleep 30
+        log "[TEST MODE] Would send 2-minute warning"
+        log "[TEST MODE] Would wait 90 seconds"
+        log "[TEST MODE] Would send 30-second warning"
+        log "[TEST MODE] Would wait 30 seconds"
+        log "[TEST MODE] Would kill processes and shutdown"
+        sleep 5
         return
     fi
 
+    # T-2 minutes warning
+    notify "🦉 NightOwl" "Computer will shut down in 2 minutes. Save your work!"
+    log "Sent 2-minute warning"
+    sleep 90
+
+    # T-30 seconds warning
+    notify "🦉 NightOwl - FINAL WARNING" "Shutting down in 30 seconds..."
+    log "Sent 30-second warning"
+    sleep 30
+
+    # T-0: Enforce
+    log "Force-killing all processes for user: $TARGET_USER"
     killall -u "$TARGET_USER" -9 2>/dev/null || true
     sleep 1
     killall -u "$TARGET_USER" -9 2>/dev/null || true

@@ -1,6 +1,9 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcrypt');
+
+const BCRYPT_ROUNDS = 10;
 
 const app = express();
 const PORT = 8899;
@@ -47,12 +50,24 @@ function saveSchedule(schedule) {
   fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(schedule, null, 2));
 }
 
-function getLockPassword() {
+function getLockPasswordHash() {
   try {
     return fs.readFileSync(LOCK_PASSWORD_FILE, 'utf8').trim();
   } catch (e) {
     return null;
   }
+}
+
+async function setLockPassword(plainPassword) {
+  const hash = await bcrypt.hash(plainPassword, BCRYPT_ROUNDS);
+  fs.writeFileSync(LOCK_PASSWORD_FILE, hash);
+  return hash;
+}
+
+async function verifyLockPassword(plainPassword) {
+  const hash = getLockPasswordHash();
+  if (!hash) return false;
+  return bcrypt.compare(plainPassword, hash);
 }
 
 function isLocked(schedule) {
@@ -160,8 +175,12 @@ app.post('/api/schedule', (req, res) => {
   res.json({ ok: true, schedule: current });
 });
 
-app.post('/api/activate', (req, res) => {
-  // No password required from user — server auto-locks with its own password
+app.post('/api/activate', async (req, res) => {
+  const { password } = req.body;
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Password required (min 4 characters)' });
+  }
+
   const schedule = loadSchedule();
   if (isLocked(schedule)) {
     return res.status(400).json({ error: 'Already locked' });
@@ -169,6 +188,9 @@ app.post('/api/activate', (req, res) => {
   if (!schedule.lockPeriodDays) {
     return res.status(400).json({ error: 'No lock period set' });
   }
+
+  // Hash and store the password
+  await setLockPassword(password);
 
   const now = new Date();
   const end = new Date(now.getTime() + schedule.lockPeriodDays * 86400000);
@@ -178,6 +200,16 @@ app.post('/api/activate', (req, res) => {
 
   saveSchedule(schedule);
   res.json({ ok: true, schedule });
+});
+
+// Password verification endpoint for CLI
+app.post('/api/verify-password', async (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: 'Password required' });
+  }
+  const valid = await verifyLockPassword(password);
+  res.json({ valid });
 });
 
 app.get('/api/status', (req, res) => {
