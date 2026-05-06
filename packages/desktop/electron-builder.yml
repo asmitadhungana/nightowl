@@ -1,0 +1,81 @@
+appId: com.nightowl.app
+productName: NightOwl
+copyright: Copyright © 2024
+
+directories:
+  output: ../../dist
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.ts"
+  - "!**/*.map"
+
+extraResources:
+  - from: ../daemon/dist
+    to: daemon
+    filter:
+      - "**/*"
+      - "!**/*.ts"
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  icon: resources/icons/icon.icns
+  darkModeSupport: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.plist
+  entitlementsInherit: resources/entitlements.plist
+  artifactName: "${productName}-${version}-mac.${ext}"
+
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+  window:
+    width: 540
+    height: 380
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icons/icon.ico
+  artifactName: "${productName}-${version}-win.${ext}"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: resources/icons/icon.ico
+  uninstallerIcon: resources/icons/icon.ico
+  installerHeaderIcon: resources/icons/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: NightOwl
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Utility
+  icon: resources/icons
+  artifactName: "${productName}-${version}-linux.${ext}"
+
+publish: null

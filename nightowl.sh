@@ -164,7 +164,11 @@ cmd_install() {
 PLIST
     info "Daemon LaunchDaemon created"
 
-    # Web server plist
+    # Web server plist — runs as the invoking user, NOT root.
+    # SUDO_USER is the user who ran `sudo nightowl install`; falling back to
+    # logname for the rare case of a direct root login.
+    local web_user
+    web_user="${SUDO_USER:-$(logname 2>/dev/null || echo asmeedhungana)}"
     cat > "$PLIST_WEB" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -175,6 +179,7 @@ PLIST
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>WorkingDirectory</key><string>$SCRIPT_DIR</string>
+    <key>UserName</key><string>$web_user</string>
 </dict>
 </plist>
 PLIST

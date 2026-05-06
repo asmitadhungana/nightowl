@@ -202,6 +202,26 @@ notify() {
 }
 
 # ---------------------------------------------------------------------------
+# Re-check if curfew is still active (used before final shutdown)
+# Returns 0 if still in curfew, 1 if curfew ended
+# ---------------------------------------------------------------------------
+recheck_curfew_active() {
+    # Re-read schedule to get fresh curfew times
+    if ! read_schedule; then
+        return 1  # Schedule no longer active
+    fi
+
+    local current_min
+    current_min=$(get_current_minutes)
+
+    if is_curfew "$current_min"; then
+        return 0  # Still in curfew
+    else
+        return 1  # Curfew ended
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Enforce curfew
 # Args: $1 = "immediate" for no warnings (used by Focus Mode)
 # ---------------------------------------------------------------------------
@@ -213,10 +233,10 @@ enforce_curfew() {
         if [[ "$mode" == "immediate" ]]; then
             log "[TEST MODE] IMMEDIATE shutdown (Focus Mode)"
         else
-            log "[TEST MODE] Would send 2-minute warning"
-            log "[TEST MODE] Would wait 90 seconds"
             log "[TEST MODE] Would send 30-second warning"
             log "[TEST MODE] Would wait 30 seconds"
+            log "[TEST MODE] Would send 15-second warning"
+            log "[TEST MODE] Would wait 15 seconds"
         fi
         log "[TEST MODE] Would kill processes and shutdown"
         sleep 5
@@ -228,15 +248,22 @@ enforce_curfew() {
         notify "🦉 NightOwl - FOCUS MODE" "Locking down NOW. See you when it's over."
         sleep 3
     else
-        # Regular curfew: 2-minute warning
-        notify "🦉 NightOwl" "Computer will shut down in 2 minutes. Save your work!"
-        log "Sent 2-minute warning"
-        sleep 90
-
-        # T-30 seconds warning
-        notify "🦉 NightOwl - FINAL WARNING" "Shutting down in 30 seconds..."
+        # Regular curfew: 30-second warning
+        notify "🦉 NightOwl" "Computer will shut down in 45 seconds. Save your work!"
         log "Sent 30-second warning"
         sleep 30
+
+        # T-15 seconds warning
+        notify "🦉 NightOwl - FINAL WARNING" "Shutting down in 15 seconds..."
+        log "Sent 15-second warning"
+        sleep 15
+
+        # Re-check curfew before shutdown - abort if curfew ended
+        if ! recheck_curfew_active; then
+            log "Curfew ended during warning period — aborting shutdown"
+            notify "🦉 NightOwl" "Curfew ended. Shutdown cancelled."
+            return
+        fi
     fi
 
     # Enforce

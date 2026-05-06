@@ -304,8 +304,13 @@ app.post('/api/focus/cancel', (req, res) => {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`NightOwl server running on http://localhost:${PORT}`);
+// Bind to localhost only — there's no auth on the schedule write path before
+// activation, so exposing the API on the LAN (0.0.0.0) lets any device on
+// your network change the curfew. Override with NIGHTOWL_BIND_HOST if you
+// know what you're doing.
+const HOST = process.env.NIGHTOWL_BIND_HOST || '127.0.0.1';
+app.listen(PORT, HOST, () => {
+  console.log(`NightOwl server running on http://${HOST}:${PORT}`);
   // Ensure schedule.json exists
   loadSchedule();
 });

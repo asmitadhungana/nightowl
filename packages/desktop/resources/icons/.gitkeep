@@ -1,0 +1,9 @@
+# Placeholder for icon files
+# Add the following icons for production:
+# - icon.icns (macOS app icon)
+# - icon.ico (Windows app icon)
+# - icon.png (1024x1024 base icon)
+# - trayTemplate.png (macOS tray icon, 16x16 or 22x22, monochrome)
+# - trayTemplate@2x.png (macOS tray icon @2x)
+
+# For development, the app will run without these icons.

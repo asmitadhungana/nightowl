@@ -1,0 +1,18 @@
+{
+  "_comment": "Sample schedule for end-to-end testing. Copy to ~/Library/Application Support/NightOwl/schedule.json and edit `lockEndDate` to be ~10 minutes from now and `curfewStart` to be ~2 minutes from now (in your local timezone). With NIGHTOWL_DRY_RUN=1 the daemon will fire warnings and a notification but NOT halt your machine.",
+  "active": true,
+  "lockPeriodDays": 1,
+  "lockStartDate": "2026-05-05T12:00:00.000Z",
+  "lockEndDate": "2026-05-06T12:00:00.000Z",
+  "days": {
+    "monday":    { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "tuesday":   { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "wednesday": { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "thursday":  { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "friday":    { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "saturday":  { "curfewStart": "22:00", "curfewEnd": "06:00" },
+    "sunday":    { "curfewStart": "22:00", "curfewEnd": "06:00" }
+  },
+  "timezone": "Asia/Kathmandu",
+  "user": "REPLACE_WITH_YOUR_USERNAME"
+}

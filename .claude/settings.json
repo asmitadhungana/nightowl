@@ -1,24 +1,25 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm *)",
-      "Bash(node *)",
-      "Bash(git *)",
-      "Bash(bash *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
-      "Bash(mkdir *)",
-      "Bash(chmod *)",
-      "Bash(NIGHTOWL_TEST_MODE=*)",
-      "Bash(curl *)",
-      "Bash(echo *)",
-      "Bash(timeout *)",
-      "Bash(kill *)",
-      "Bash(pkill *)",
-      "Bash(launchctl *)",
-      "Bash(npx *)",
+      "Bash(*)",
       "Read(*)",
-      "Write(*)"
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Task(*)",
+      "TaskOutput(*)",
+      "TaskStop(*)",
+      "TaskCreate(*)",
+      "TaskUpdate(*)",
+      "TaskGet(*)",
+      "TaskList(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "Skill(*)",
+      "NotebookEdit(*)",
+      "EnterPlanMode(*)",
+      "ExitPlanMode(*)"
     ]
   }
 }

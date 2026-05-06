@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'">
+  <title>NightOwl</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="titlebar">
+    <span class="titlebar-title">NightOwl</span>
+  </div>
+
+  <div id="app">
+    <div id="loading" class="screen">
+      <div class="owl-icon">🦉</div>
+      <p>Loading...</p>
+    </div>
+
+    <!-- EDIT MODE -->
+    <div id="edit-mode" class="screen hidden">
+      <header>
+        <div class="owl-icon">🦉</div>
+        <h1>NightOwl</h1>
+        <p class="subtitle">Set your commitment</p>
+      </header>
+
+      <section class="card daemon-card">
+        <div class="daemon-status">
+          <span id="daemon-indicator" class="indicator"></span>
+          <span id="daemon-text">Checking daemon...</span>
+        </div>
+        <button id="daemon-install-btn" class="small-btn hidden">Install Daemon</button>
+      </section>
+
+      <section class="card">
+        <h2>Lock Duration</h2>
+        <div class="duration-buttons">
+          <button class="dur-btn" data-days="7">7 days</button>
+          <button class="dur-btn" data-days="14">14 days</button>
+          <button class="dur-btn" data-days="30">30 days</button>
+          <div class="custom-dur">
+            <input type="number" id="custom-days" min="1" max="365" placeholder="Custom">
+            <span>days</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Presets</h2>
+        <div class="preset-buttons">
+          <button class="preset-btn" data-preset="nightowl">🦉 Night Owl<small>10PM–6AM</small></button>
+          <button class="preset-btn" data-preset="earlybird">🐦 Early Bird<small>9PM–5AM</small></button>
+          <button class="preset-btn" data-preset="weekendflex">🎉 Weekend Flex<small>Weekdays 10–6 / Weekends 11–7</small></button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Daily Schedule</h2>
+        <button id="copy-all-btn" class="small-btn">Copy Monday to all</button>
+        <div id="day-rows"></div>
+      </section>
+
+      <button id="lock-btn" class="big-btn" disabled>🔒 Lock It In</button>
+
+      <section class="card focus-card">
+        <h2>⚡ Quick Focus</h2>
+        <p class="focus-desc">Lock down for a quick focus session. No cancelling.</p>
+        <div class="focus-buttons">
+          <button class="focus-btn" data-min="5">5 min</button>
+          <button class="focus-btn" data-min="15">15 min</button>
+          <button class="focus-btn" data-min="25">25 min</button>
+          <button class="focus-btn" data-min="45">45 min</button>
+          <button class="focus-btn" data-min="60">1 hr</button>
+          <button class="focus-btn" data-min="120">2 hr</button>
+          <div class="custom-focus">
+            <input type="number" id="custom-focus-min" min="1" max="480" placeholder="Custom">
+            <span>min</span>
+          </div>
+        </div>
+        <button id="focus-start-btn" class="big-btn focus-go" disabled>⚡ Start Focus</button>
+      </section>
+    </div>
+
+    <!-- FOCUS ACTIVE -->
+    <div id="focus-mode" class="screen hidden">
+      <header class="focus-header">
+        <div class="owl-icon">🦉</div>
+        <h1>FOCUS MODE</h1>
+        <p class="subtitle">Stay committed</p>
+      </header>
+      <section class="card">
+        <div id="focus-timer" class="focus-timer">00:00</div>
+        <div id="focus-label" class="focus-label">remaining</div>
+        <div class="focus-progress-bar"><div id="focus-progress-fill" class="progress-fill"></div></div>
+      </section>
+    </div>
+
+    <!-- LOCKED MODE -->
+    <div id="locked-mode" class="screen hidden">
+      <header class="locked-header">
+        <h1>LOCKED IN 🔒</h1>
+        <div id="lock-end-date" class="end-date"></div>
+      </header>
+
+      <section class="card progress-card">
+        <div class="progress-label">
+          <span id="day-progress-text">Day 1 of 7</span>
+          <span id="day-progress-pct">0%</span>
+        </div>
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+      </section>
+
+      <section class="card status-card">
+        <div id="current-status" class="status-indicator"></div>
+        <div id="countdown" class="countdown"></div>
+        <div id="streak" class="streak"></div>
+      </section>
+
+      <section class="card">
+        <h2>Weekly Timeline</h2>
+        <div id="timeline"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Password Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>🔐 Activate Lock</h2>
+      <p>Enter the lock password to commit. Once locked, the schedule cannot be changed.</p>
+      <input type="password" id="modal-password" placeholder="Password" autocomplete="off">
+      <div id="modal-error" class="modal-error hidden"></div>
+      <div class="modal-buttons">
+        <button id="modal-cancel" class="modal-btn cancel">Cancel</button>
+        <button id="modal-confirm" class="modal-btn confirm">Lock It 🔒</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
