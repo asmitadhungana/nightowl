@@ -9,6 +9,7 @@ import fs from 'fs';
 import { setupIpcHandlers } from './api.js';
 import { createTray, updateTrayMenu } from './tray.js';
 import { setupAutoLaunch } from './autolaunch.js';
+import { startFriendlockPolling, stopFriendlockPolling } from './friendlock.js';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -101,6 +102,7 @@ interface AppWithQuit extends Electron.App {
 
 app.on('before-quit', () => {
   (app as AppWithQuit).isQuitting = true;
+  stopFriendlockPolling();
 });
 
 app.whenReady().then(async () => {
@@ -115,6 +117,10 @@ app.whenReady().then(async () => {
 
   // Set up auto-launch
   await setupAutoLaunch();
+
+  // Start polling the bot for delegated-lock messages.
+  // Idempotent — schedules a no-op tick if there's no active delegation.
+  startFriendlockPolling();
 
   // macOS specific - create window on activation if none exist
   app.on('activate', () => {

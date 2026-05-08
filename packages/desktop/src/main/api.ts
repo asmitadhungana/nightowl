@@ -29,6 +29,7 @@ import {
   type Status,
 } from '@nightowl/shared';
 import { getDaemonStatus, installDaemon, uninstallDaemon } from './privileged.js';
+import * as friendlock from './friendlock.js';
 
 /**
  * Set up all IPC handlers for renderer communication
@@ -54,6 +55,11 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('daemon:status', handleDaemonStatus);
   ipcMain.handle('daemon:install', handleDaemonInstall);
   ipcMain.handle('daemon:uninstall', handleDaemonUninstall);
+
+  // v2 Friend Lock — alpha set
+  ipcMain.handle('friendlock:enroll', () => friendlock.enroll());
+  ipcMain.handle('friendlock:cancelPairing', () => friendlock.cancelEnrollment());
+  ipcMain.handle('friendlock:getStatus', () => friendlock.getDelegationStatus());
 }
 
 /**
