@@ -39,12 +39,17 @@
       {
         "from": "../daemon/dist",
         "to": "daemon",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "resources/icons/icon.icns",
       "darkModeSupport": true,
       "hardenedRuntime": true,
@@ -52,7 +57,9 @@
       "entitlementsInherit": "resources/entitlements.plist"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "resources/icons/icon.ico"
     },
     "nsis": {
@@ -61,8 +68,12 @@
       "installerIcon": "resources/icons/icon.ico"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Utility"
-    }
+    },
+    "electronVersion": "28.3.3"
   }
 }

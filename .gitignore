@@ -11,3 +11,4 @@ focus.json
 packages/*/dist/
 *.tsbuildinfo
 /dist/
+/build/
