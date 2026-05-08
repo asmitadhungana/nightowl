@@ -12,3 +12,8 @@ packages/*/dist/
 *.tsbuildinfo
 /dist/
 /build/
+
+# Bot secrets (Ed25519 private key, Telegram tokens, etc.)
+packages/bot/secrets/
+.dev.vars
+.wrangler/

@@ -2,6 +2,8 @@
  * NightOwl Type Definitions
  */
 
+import type { DelegationState } from './delegation.js';
+
 /** Time string in HH:MM format (e.g., "22:00") */
 export type TimeString = string;
 
@@ -36,6 +38,12 @@ export interface Schedule {
   timezone: string;
   /** Username for this schedule (macOS/Windows username) */
   user?: string;
+  /**
+   * v2 Friend Lock: present when the lock is held by a friend's password
+   * delegated via Telegram bot. Null/absent for self-set locks.
+   * v1 schedule.json files lack this field; loadSchedule treats absent as null.
+   */
+  delegation?: DelegationState | null;
 }
 
 /** Focus mode session */
