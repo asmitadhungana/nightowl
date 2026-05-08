@@ -12,6 +12,7 @@ let selectedDays = 7;
 let countdownInterval = null;
 let selectedFocusMin = 0;
 let focusInterval = null;
+let daemonRunning = false;
 
 // ---------------------------------------------------------------------------
 // Init
@@ -55,25 +56,31 @@ async function checkDaemonStatus() {
 
   try {
     const status = await window.nightowl.getDaemonStatus();
+    daemonRunning = !!status.running;
 
     if (status.running) {
       indicator.className = 'indicator running';
-      text.textContent = 'Daemon running';
+      text.textContent = 'Daemon running — enforcement active';
       installBtn.classList.add('hidden');
     } else if (status.installed) {
       indicator.className = 'indicator installed';
-      text.textContent = 'Daemon installed (not running)';
-      installBtn.classList.add('hidden');
+      text.textContent = 'Daemon installed but NOT running — click Reinstall';
+      installBtn.textContent = 'Reinstall Daemon';
+      installBtn.classList.remove('hidden');
     } else {
       indicator.className = 'indicator not-installed';
-      text.textContent = 'Daemon not installed';
+      text.textContent = 'Daemon not installed — focus & lock will NOT enforce';
+      installBtn.textContent = 'Install Daemon';
       installBtn.classList.remove('hidden');
     }
   } catch (error) {
+    daemonRunning = false;
     indicator.className = 'indicator error';
     text.textContent = 'Could not check daemon status';
+    installBtn.textContent = 'Install Daemon';
     installBtn.classList.remove('hidden');
   }
+  applyDaemonGating();
 
   installBtn.onclick = async () => {
     installBtn.disabled = true;
@@ -93,6 +100,29 @@ async function checkDaemonStatus() {
     installBtn.disabled = false;
     installBtn.textContent = 'Install Daemon';
   };
+}
+
+function applyDaemonGating() {
+  const lockBtn = document.getElementById('lock-btn');
+  const focusBtn = document.getElementById('focus-start-btn');
+  if (lockBtn) {
+    if (!daemonRunning) {
+      lockBtn.disabled = true;
+      lockBtn.title = 'Daemon not running — install it first or no enforcement will happen';
+    } else {
+      lockBtn.title = '';
+      updateLockBtn();
+    }
+  }
+  if (focusBtn) {
+    if (!daemonRunning) {
+      focusBtn.disabled = true;
+      focusBtn.title = 'Daemon not running — install it first or no enforcement will happen';
+    } else {
+      focusBtn.title = '';
+      if (selectedFocusMin > 0) focusBtn.disabled = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,11 +226,15 @@ function setupCopyAll() {
 }
 
 function updateLockBtn() {
-  document.getElementById('lock-btn').disabled = selectedDays < 1;
+  document.getElementById('lock-btn').disabled = selectedDays < 1 || !daemonRunning;
 }
 
 function setupLockButton() {
   document.getElementById('lock-btn').addEventListener('click', async () => {
+    if (!daemonRunning) {
+      alert('Daemon not running. Install it first or no enforcement will happen.');
+      return;
+    }
     const days = getDaysFromUI();
     // Save schedule first
     await window.nightowl.saveSchedule({
@@ -395,7 +429,7 @@ function setupFocus() {
       document.querySelectorAll('.focus-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       selectedFocusMin = parseInt(btn.dataset.min);
-      document.getElementById('focus-start-btn').disabled = false;
+      document.getElementById('focus-start-btn').disabled = !daemonRunning;
     });
   });
 
@@ -406,7 +440,7 @@ function setupFocus() {
       if (v > 0) {
         document.querySelectorAll('.focus-btn').forEach(b => b.classList.remove('active'));
         selectedFocusMin = v;
-        document.getElementById('focus-start-btn').disabled = false;
+        document.getElementById('focus-start-btn').disabled = !daemonRunning;
       }
     });
   }
@@ -415,6 +449,10 @@ function setupFocus() {
   if (focusStartBtn) {
     focusStartBtn.addEventListener('click', async () => {
       if (!selectedFocusMin) return;
+      if (!daemonRunning) {
+        alert('Daemon not running. Install it first or your focus session will not enforce.');
+        return;
+      }
       try {
         const result = await window.nightowl.startFocus({ minutes: selectedFocusMin });
         if (result.ok) {

@@ -74,17 +74,25 @@ async function getMacosDaemonStatus(): Promise<{
   running: boolean;
   platform: string;
 }> {
-  // Plist alone is enough — the new install model points the plist at the
-  // already-built daemon dist instead of copying a binary.
   const installed = fs.existsSync(MACOS_PLIST_PATH);
 
+  // System daemons live in launchd's "system" domain. `launchctl list` from a
+  // user-context process (which is how Electron runs) does not surface them —
+  // it only shows the user's own LaunchAgents. `launchctl print system/<label>`
+  // queries the system domain without requiring sudo and exits 0 iff loaded.
   let running = false;
   if (installed) {
     try {
-      const { stdout } = await execAsync(`launchctl list | grep com.nightowl.daemon || true`);
-      running = stdout.includes('com.nightowl.daemon');
+      await execAsync(`launchctl print system/com.nightowl.daemon`);
+      running = true;
     } catch {
-      running = false;
+      try {
+        // Fallback: process check by daemon script path.
+        const { stdout } = await execAsync(`pgrep -f 'daemon/dist/index.js' || true`);
+        running = stdout.trim().length > 0;
+      } catch {
+        running = false;
+      }
     }
   }
 
@@ -148,9 +156,20 @@ async function installMacosDaemon(): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: 'Daemon entry script not found. Did you build the daemon?' };
   }
 
-  const daemonDir = path.dirname(daemonSource);
-  // node_modules lives one level up from dist/, at the package root
-  const daemonWorkingDir = path.dirname(daemonDir);
+  // Walk up from the script and pick the first ancestor that has a
+  // node_modules directory next to it. In dev, that's
+  // packages/daemon/ (next to packages/daemon/dist/). In prod, that's
+  // .app/Contents/Resources/daemon/ (next to its own node_modules/).
+  const daemonWorkingDir = (() => {
+    let dir = path.dirname(daemonSource);
+    for (let i = 0; i < 4; i++) {
+      if (fs.existsSync(path.join(dir, 'node_modules'))) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return path.dirname(daemonSource);
+  })();
 
   const plistContent = createMacosPlist({
     daemonScriptPath: daemonSource,
