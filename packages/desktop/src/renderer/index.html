@@ -49,6 +49,26 @@
         </div>
       </section>
 
+      <section class="card lockmode-card">
+        <h2>Who holds the keys?</h2>
+        <div class="lockmode-options">
+          <label class="lockmode-option">
+            <input type="radio" name="lock-mode" value="self" checked>
+            <div class="opt-body">
+              <div class="opt-title">I'll set the password</div>
+              <div class="opt-sub">You enter a password and can also unlock with it. Standard.</div>
+            </div>
+          </label>
+          <label class="lockmode-option">
+            <input type="radio" name="lock-mode" value="friend">
+            <div class="opt-body">
+              <div class="opt-title">Friend Lock 🔒 <span class="opt-badge">v2 alpha</span></div>
+              <div class="opt-sub">A trusted friend sets the password via Telegram. You can't bypass it.</div>
+            </div>
+          </label>
+        </div>
+      </section>
+
       <section class="card">
         <h2>Presets</h2>
         <div class="preset-buttons">
@@ -103,6 +123,7 @@
     <div id="locked-mode" class="screen hidden">
       <header class="locked-header">
         <h1>LOCKED IN 🔒</h1>
+        <div id="delegation-badge" class="delegation-badge hidden"></div>
         <div id="lock-end-date" class="end-date"></div>
       </header>
 
@@ -138,6 +159,48 @@
         <button id="modal-cancel" class="modal-btn cancel">Cancel</button>
         <button id="modal-confirm" class="modal-btn confirm">Lock It 🔒</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Friend Lock Modal — 3 states: A=intro, B=code-shown, C=awaiting-password -->
+  <div id="friendlock-overlay" class="modal-overlay hidden">
+    <div class="modal friendlock-modal">
+
+      <!-- State A: intro / generate -->
+      <div id="friendlock-state-a" class="friendlock-state">
+        <h2>🔒 Friend Lock</h2>
+        <p>We'll generate an 8-character code. Have your friend open the NightOwl Telegram bot and send <code>/pair &lt;CODE&gt;</code>, then <code>/setpassword &lt;PW&gt;</code>.</p>
+        <p class="friendlock-warning">Once your friend sets the password, you can't undo this until the lock expires (or 72h emergency cooldown — Phase 2).</p>
+        <div id="friendlock-error-a" class="modal-error hidden"></div>
+        <div class="modal-buttons">
+          <button id="friendlock-cancel-a" class="modal-btn cancel">Cancel</button>
+          <button id="friendlock-generate-btn" class="modal-btn confirm">Generate Pair Code</button>
+        </div>
+      </div>
+
+      <!-- State B: code shown -->
+      <div id="friendlock-state-b" class="friendlock-state hidden">
+        <h2>📲 Send this to your friend</h2>
+        <div class="paircode" id="friendlock-paircode">— — —</div>
+        <p>Open the NightOwl Telegram bot and send:</p>
+        <pre class="paircode-cmd"><code id="friendlock-paircmd">/pair —</code></pre>
+        <div class="friendlock-status" id="friendlock-status-b">Waiting for your friend to pair…</div>
+        <div class="friendlock-countdown" id="friendlock-countdown">Code expires in 5:00</div>
+        <div id="friendlock-error-b" class="modal-error hidden"></div>
+        <div class="modal-buttons">
+          <button id="friendlock-cancel-b" class="modal-btn cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- State C: paired, awaiting password -->
+      <div id="friendlock-state-c" class="friendlock-state hidden">
+        <h2>✓ Paired with <span id="friendlock-friend-name">your friend</span></h2>
+        <p>Asking <span id="friendlock-friend-name-2">them</span> to set the lock password…</p>
+        <div class="friendlock-spinner"></div>
+        <div class="friendlock-status">Have them send <code>/setpassword &lt;password&gt;</code> to the bot. The lock will activate the moment NightOwl receives the password (within ~10 seconds).</div>
+        <div id="friendlock-error-c" class="modal-error hidden"></div>
+      </div>
+
     </div>
   </div>
 

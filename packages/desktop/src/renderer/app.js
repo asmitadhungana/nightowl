@@ -13,6 +13,10 @@ let countdownInterval = null;
 let selectedFocusMin = 0;
 let focusInterval = null;
 let daemonRunning = false;
+let lockMode = 'self';                 // 'self' | 'friend'
+let friendlockStatus = null;            // last DelegationStatus from main
+let friendlockCountdownInterval = null;
+let friendlockUnsubscribers = [];
 
 // ---------------------------------------------------------------------------
 // Init
@@ -22,11 +26,13 @@ async function init() {
     schedule = await window.nightowl.getSchedule();
     status = await window.nightowl.getStatus();
     const focus = await window.nightowl.getFocus();
+    friendlockStatus = await window.nightowl.friendlock.getStatus();
 
     document.getElementById('loading').classList.add('hidden');
 
     // Check daemon status
     checkDaemonStatus();
+    subscribeFriendlockEvents();
 
     if (focus.active) {
       showFocusActive(focus);
@@ -35,8 +41,15 @@ async function init() {
     } else {
       showEdit();
       setupFocus();
+
+      // If we're mid-pairing (e.g. user closed the app and reopened), resume the modal.
+      if (friendlockStatus.delegated && friendlockStatus.phase &&
+          ['enrolled','paired','awaiting_password'].includes(friendlockStatus.phase)) {
+        resumeFriendlockModal();
+      }
     }
     setupPasswordModal();
+    setupFriendlockModal();
   } catch (error) {
     console.error('Init error:', error);
     document.getElementById('loading').innerHTML = `
@@ -136,6 +149,24 @@ function showEdit() {
   setupPresets();
   setupCopyAll();
   setupLockButton();
+  setupLockModeToggle();
+}
+
+function setupLockModeToggle() {
+  const radios = document.querySelectorAll('input[name="lock-mode"]');
+  radios.forEach(r => {
+    r.addEventListener('change', (e) => {
+      lockMode = e.target.value;
+      // Update the lock button label so the user knows what'll happen on click.
+      const btn = document.getElementById('lock-btn');
+      if (btn) {
+        btn.textContent = lockMode === 'friend' ? '🔒 Set up Friend Lock' : '🔒 Lock It In';
+      }
+    });
+  });
+  // Reflect initial state.
+  const btn = document.getElementById('lock-btn');
+  if (btn) btn.textContent = lockMode === 'friend' ? '🔒 Set up Friend Lock' : '🔒 Lock It In';
 }
 
 function buildDayRows() {
@@ -237,13 +268,22 @@ function setupLockButton() {
     }
     const days = getDaysFromUI();
     // Save schedule first
-    await window.nightowl.saveSchedule({
+    const saveResult = await window.nightowl.saveSchedule({
       days,
       lockPeriodDays: selectedDays,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kathmandu'
     });
-    // Show password modal
-    showPasswordModal();
+    if (!saveResult.ok) {
+      alert(saveResult.error || 'Could not save schedule');
+      return;
+    }
+    schedule = saveResult.schedule;
+
+    if (lockMode === 'friend') {
+      showFriendlockModal('a');
+    } else {
+      showPasswordModal();
+    }
   });
 }
 
@@ -302,6 +342,172 @@ function setupPasswordModal() {
 }
 
 // ---------------------------------------------------------------------------
+// FRIEND LOCK MODAL
+// ---------------------------------------------------------------------------
+function showFriendlockModal(state) {
+  const overlay = document.getElementById('friendlock-overlay');
+  overlay.classList.remove('hidden');
+  showFriendlockState(state);
+}
+
+function hideFriendlockModal() {
+  document.getElementById('friendlock-overlay').classList.add('hidden');
+  if (friendlockCountdownInterval) {
+    clearInterval(friendlockCountdownInterval);
+    friendlockCountdownInterval = null;
+  }
+}
+
+function showFriendlockState(state) {
+  ['a', 'b', 'c'].forEach(s => {
+    const el = document.getElementById(`friendlock-state-${s}`);
+    if (el) el.classList.toggle('hidden', s !== state);
+  });
+}
+
+function showFriendlockError(state, message) {
+  const errEl = document.getElementById(`friendlock-error-${state}`);
+  if (errEl) {
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+function clearFriendlockError(state) {
+  const errEl = document.getElementById(`friendlock-error-${state}`);
+  if (errEl) errEl.classList.add('hidden');
+}
+
+function setupFriendlockModal() {
+  document.getElementById('friendlock-cancel-a').addEventListener('click', async () => {
+    hideFriendlockModal();
+  });
+
+  document.getElementById('friendlock-generate-btn').addEventListener('click', async () => {
+    clearFriendlockError('a');
+    const btn = document.getElementById('friendlock-generate-btn');
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    try {
+      const res = await window.nightowl.friendlock.enroll();
+      if (!res.ok) {
+        showFriendlockError('a', res.error || 'Could not enroll');
+        btn.disabled = false;
+        btn.textContent = 'Generate Pair Code';
+        return;
+      }
+      renderPairCode(res.pairCode, res.expiresAt);
+      showFriendlockState('b');
+    } catch (e) {
+      showFriendlockError('a', 'Error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Generate Pair Code';
+    }
+  });
+
+  document.getElementById('friendlock-cancel-b').addEventListener('click', async () => {
+    try {
+      await window.nightowl.friendlock.cancelPairing();
+    } catch (e) { /* ignore */ }
+    hideFriendlockModal();
+  });
+}
+
+function renderPairCode(code, expiresAtMs) {
+  // Format like X4P-Q7M-2 for readability (8 chars → 3-3-2)
+  const fmt = `${code.slice(0,3)}-${code.slice(3,6)}-${code.slice(6,8)}`;
+  document.getElementById('friendlock-paircode').textContent = fmt;
+  document.getElementById('friendlock-paircmd').textContent = `/pair ${code}`;
+
+  if (friendlockCountdownInterval) clearInterval(friendlockCountdownInterval);
+  const countdownEl = document.getElementById('friendlock-countdown');
+  const tick = () => {
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      countdownEl.textContent = 'Code expired. Generate a new one.';
+      clearInterval(friendlockCountdownInterval);
+      friendlockCountdownInterval = null;
+      return;
+    }
+    const totalSec = Math.floor(remainingMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    countdownEl.textContent = `Code expires in ${m}:${String(s).padStart(2, '0')}`;
+  };
+  tick();
+  friendlockCountdownInterval = setInterval(tick, 1000);
+}
+
+async function resumeFriendlockModal() {
+  // We're mid-flow from a previous session. Render the appropriate state.
+  // We don't have the original pair code in memory if the bot already paired —
+  // skip B and jump to C (the user just waits for the password).
+  if (friendlockStatus.phase === 'enrolled') {
+    if (friendlockStatus.pairCode && friendlockStatus.pairCodeExpiresAt) {
+      renderPairCode(friendlockStatus.pairCode, friendlockStatus.pairCodeExpiresAt);
+      showFriendlockModal('b');
+    } else {
+      // Restart from scratch — original pair code is gone.
+      showFriendlockModal('a');
+    }
+  } else if (friendlockStatus.phase === 'paired' || friendlockStatus.phase === 'awaiting_password') {
+    showFriendlockModal('c');
+    if (friendlockStatus.friendName) {
+      document.getElementById('friendlock-friend-name').textContent = friendlockStatus.friendName;
+      document.getElementById('friendlock-friend-name-2').textContent = friendlockStatus.friendName;
+    }
+  }
+}
+
+function subscribeFriendlockEvents() {
+  // Clean up any prior subscriptions (e.g. on hot reload during dev).
+  friendlockUnsubscribers.forEach(u => { try { u(); } catch (e) {} });
+  friendlockUnsubscribers = [];
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onPhaseChange(async (phase) => {
+      friendlockStatus = await window.nightowl.friendlock.getStatus();
+      if (phase === 'awaiting_password') {
+        showFriendlockState('c');
+        if (friendlockStatus.friendName) {
+          document.getElementById('friendlock-friend-name').textContent = friendlockStatus.friendName;
+          document.getElementById('friendlock-friend-name-2').textContent = friendlockStatus.friendName;
+        }
+      } else if (phase === 'active') {
+        // Lock just activated — close modal and transition to locked-mode.
+        hideFriendlockModal();
+        schedule = await window.nightowl.getSchedule();
+        status = await window.nightowl.getStatus();
+        document.getElementById('edit-mode').classList.add('hidden');
+        showLocked();
+      } else if (phase === null) {
+        hideFriendlockModal();
+      }
+    })
+  );
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onFriendPaired(({ friendName }) => {
+      const statusEl = document.getElementById('friendlock-status-b');
+      if (statusEl) statusEl.textContent = `Paired with ${friendName}. Asking them to set the password…`;
+    })
+  );
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onBotUnreachable(() => {
+      // Surface the error in whichever state is currently open.
+      ['a','b','c'].forEach(s => {
+        const el = document.getElementById(`friendlock-state-${s}`);
+        if (el && !el.classList.contains('hidden')) {
+          showFriendlockError(s, 'Bot unreachable. Check NIGHTOWL_BOT_URL or your internet, then try again.');
+        }
+      });
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LOCKED MODE
 // ---------------------------------------------------------------------------
 function showLocked() {
@@ -323,6 +529,17 @@ function showLocked() {
 }
 
 function updateLockedUI() {
+  // Delegation badge
+  const badge = document.getElementById('delegation-badge');
+  if (badge) {
+    if (schedule.delegation && schedule.delegation.friendName) {
+      badge.textContent = `🔒 Locked by ${schedule.delegation.friendName}`;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  }
+
   // End date
   if (schedule.lockEndDate) {
     const end = new Date(schedule.lockEndDate);
