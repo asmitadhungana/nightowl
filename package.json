@@ -6,16 +6,20 @@
   "workspaces": [
     "packages/shared",
     "packages/daemon",
-    "packages/desktop"
+    "packages/desktop",
+    "packages/bot"
   ],
   "scripts": {
     "build": "npm run build -ws",
     "build:shared": "npm run build -w packages/shared",
     "build:daemon": "npm run build -w packages/daemon",
     "build:desktop": "npm run build -w packages/desktop",
+    "build:bot": "npm run build -w packages/bot",
     "dev": "npm run build:shared && npm run build:daemon && npm run dev -w packages/desktop",
     "dev:desktop": "npm run dev -w packages/desktop",
     "dev:daemon": "NIGHTOWL_TEST_MODE=1 npm run dev -w packages/daemon",
+    "dev:bot": "npm run dev -w packages/bot",
+    "deploy:bot": "npm run deploy -w packages/bot",
     "test": "npm run test -ws --if-present",
     "test:shared": "npm run test -w packages/shared",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo dist",

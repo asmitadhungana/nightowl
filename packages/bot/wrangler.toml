@@ -1,0 +1,33 @@
+# NightOwl Friend Lock bot — Cloudflare Worker config
+#
+# Before first deploy:
+#   wrangler kv:namespace create NIGHTOWL_KV
+#     → paste the returned id below under [[kv_namespaces]]
+#   wrangler secret put TG_BOT_TOKEN          # from @BotFather
+#   wrangler secret put TG_WEBHOOK_SECRET     # `openssl rand -hex 32`
+#   wrangler secret put BOT_ED25519_PRIVKEY   # 64 hex chars from packages/bot/secrets/bot-private-key.hex
+#   wrangler deploy
+# Then set Telegram webhook:
+#   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<your-worker>.workers.dev/tg/webhook/<SECRET>"
+
+name = "nightowl-bot"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Disable Workers' default request-body logging so a `/setpassword` payload
+# never lands in any operator-visible log surface. Logpush stays off too.
+[observability]
+enabled = false
+
+# KV namespace binding. Replace `id` with the value `wrangler kv:namespace create
+# NIGHTOWL_KV` returned for you. The `preview_id` is for `wrangler dev`.
+[[kv_namespaces]]
+binding = "NIGHTOWL_KV"
+id = "REPLACE_WITH_PRODUCTION_KV_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+
+# Secrets are NOT set here. Use `wrangler secret put <NAME>` for each:
+#   TG_BOT_TOKEN
+#   TG_WEBHOOK_SECRET
+#   BOT_ED25519_PRIVKEY
