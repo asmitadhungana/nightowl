@@ -2,11 +2,50 @@
 
 ## Project Overview
 
-NightOwl is a macOS device curfew system that enforces a shutdown schedule. It runs a root-level daemon (`nightowld`) that shuts down the computer during curfew hours. It also includes a web UI (Express server on port 8899) for configuring schedules and a CLI tool.
+NightOwl is a macOS device curfew system that enforces a shutdown schedule. A privileged daemon (LaunchDaemon, runs as root) shuts down the computer during curfew hours. A desktop UI lets the user configure schedules and arm enforcement. The whole point is to be hard to bypass.
 
-**Target OS:** macOS (Apple Silicon / Intel)
-**Runtime:** Node.js (server), Bash (daemon + CLI)
+**Target OS:** macOS (Apple Silicon primary; Intel via universal builds)
+**Form factor (v1.0.0+):** Electron desktop app + LaunchDaemon (monorepo under `packages/`). The legacy `server.js` / `nightowld.sh` / `nightowl.sh` at the repo root are the pre-public iterations — kept for reference, not shipped.
 **User:** This is a personal project for a single user (`asmeedhungana` macOS username)
+
+## Release History
+
+Public versioning starts at **v1.0.0**. Earlier dev iterations (internal v1/v2/v3 in commit history) were non-working and are superseded — do not treat them as releases. Add a new section here every time we ship a tagged release; keep each entry tight (≤ ~6 bullets per sub-section) so this file stays loadable.
+
+### v1.0.0 — first prod release (2026-05-08)
+
+Tag: `v1.0.0` · Release: https://github.com/asmitadhungana/nightowl/releases/tag/v1.0.0
+Validated by a real **7-day enforced lock on macOS hardware** — curfew fired at 22:00, machine stayed locked until 06:00. This is the canonical "known-working" baseline; future versions revert here on regression.
+
+**Core changes:**
+- Daemon-status detection now uses `launchctl print system/<label>` (the user-context `launchctl list` does not surface system-domain daemons), with a `pgrep` fallback.
+- Daemon working dir resolved by walking up to `node_modules`, so the packaged `.app/Contents/Resources/daemon/` and the dev tree both work.
+- Lock + Focus buttons gated on daemon-running status, with explicit copy when the daemon is absent — no more silently armed enforcement.
+- Pinned `electron` 28.3.3 for reproducible builds.
+- App icons (icns/ico/png + tray templates), `scripts/build-mac.sh`, `scripts/generate-icon.py`.
+- `/build/` (electron-builder output, ~440 MB) added to `.gitignore`.
+
+**Core problems faced during development:**
+- Daemon had never been exercised on real macOS hardware before this cycle (it was originally written on a Linux server). Until the 7-day test, end-to-end enforcement was theoretical.
+- `launchctl list` from the user-context Electron process returned nothing for system-domain daemons → app reported "not running" while the daemon was actually running. Surfaced only on real hardware. Fixed via `launchctl print system/<label>`.
+- Packaging path mismatch: dev expected `packages/daemon/` next to `dist/`, but the packaged `.app` puts the daemon under `Contents/Resources/daemon/`. Original install code computed working dir by `path.dirname(dirname(...))`, which broke in prod. Replaced with an upward walk for `node_modules`.
+- Direct push to `main` and self-merge are blocked by permission rules on this repo — releases must go through a PR. Recorded so future ship cycles use a release branch + PR by default.
+- GPG signing for the `v1.0.0` tag failed due to a broken pinentry on the dev machine. Shipped the tag unsigned; pinentry-mac was installed and `~/.gnupg/gpg-agent.conf` updated post-release so future tags can be signed.
+
+**Known limitations carried forward into v1.x maintenance** (see "What Needs Work" below): graceful pre-shutdown warnings, bcrypt password hashing, NTP time-tampering check, daemon self-healing, schedule.json hardening, Focus-mode real enforcement.
+
+### Template for future entries
+
+```
+### vX.Y.Z — short title (YYYY-MM-DD)
+
+Tag: `vX.Y.Z` · Release: <link>
+One-line "what this release is about" + how it was validated.
+
+**Core changes:** (≤6 bullets, what shipped)
+**Core problems faced:** (≤6 bullets, surprises / dead ends / fixed-mid-cycle issues — the stuff worth remembering)
+**Known limitations carried forward:** (one line or list)
+```
 
 ## Architecture
 
@@ -55,9 +94,9 @@ nightowl/
 ### What Needs Work
 
 #### Critical — Must Fix
-1. **Daemon has never been tested on actual macOS** — It was written on a Linux server. Needs real testing with `launchd`, `shutdown`, `killall`, etc.
-2. **No graceful warning before shutdown** — DESIGN.md specifies 2-min and 30-sec warnings with macOS notifications, but `nightowld.sh` just immediately kills processes and shuts down. Need to add `osascript` notification alerts before enforcement.
-3. **Password system is plaintext** — `.lock-password` stores raw password. Should use bcrypt hash (DESIGN.md specifies this).
+1. ~~**Daemon has never been tested on actual macOS**~~ — **RESOLVED in v1.0.0** (validated by 7-day lock test on real hardware).
+2. **No graceful warning before shutdown** — DESIGN.md specifies 2-min and 30-sec warnings with macOS notifications, but the daemon just immediately kills processes and shuts down. Need to add `osascript` notification alerts before enforcement.
+3. **Password system is plaintext** — `.lock-password` stores raw password. Should use bcrypt hash (DESIGN.md specifies this; `bcrypt` is already in `package.json` deps).
 4. **NTP time verification not implemented** — Daemon uses system time. DESIGN.md specifies NTP verification to prevent clock manipulation bypass.
 5. **Self-healing not implemented** — Daemon should recreate its own plist/binary if deleted. Not coded yet.
 
