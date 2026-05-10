@@ -64,6 +64,7 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('friendlock:getStatus', () => friendlock.getDelegationStatus());
   // v2 Friend Lock — uninstall gate
   ipcMain.handle('friendlock:requestUninstall', () => friendlock.requestUninstall());
+  ipcMain.handle('friendlock:cancelPendingUninstallRequest', () => friendlock.cancelPendingUninstallRequest());
   ipcMain.handle('friendlock:startEmergencyCooldown', () => friendlock.startEmergencyCooldown());
   ipcMain.handle('friendlock:getUninstallGate', () => friendlock.getUninstallGateStatus());
 }

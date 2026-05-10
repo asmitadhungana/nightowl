@@ -751,6 +751,18 @@ function setupUninstallCard() {
     refreshUninstallCard();
   };
 
+  document.getElementById('friendlock-cancel-request-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.cancelPendingUninstallRequest();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not cancel the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
   document.getElementById('friendlock-emergency-btn').onclick = async () => {
     const errEl = document.getElementById('friendlock-uninstall-error');
     errEl.classList.add('hidden');
@@ -816,13 +828,22 @@ async function refreshUninstallCard() {
 
   const stateEl = document.getElementById('friendlock-uninstall-state');
   const askBtn = document.getElementById('friendlock-ask-friend-btn');
+  const cancelBtn = document.getElementById('friendlock-cancel-request-btn');
   const emergBtn = document.getElementById('friendlock-emergency-btn');
   const nowBtn = document.getElementById('friendlock-uninstall-now-btn');
 
-  // Reset classes + visibility
+  // Reset every per-button bit so each tick computes a clean state. Without
+  // this, e.g. `disabled = true; textContent = "Request pending…"` set on the
+  // ask button when a request was in flight would persist across the deny that
+  // came back, leaving the button stuck and unclickable.
   stateEl.className = 'uninstall-state';
   askBtn.classList.remove('hidden');
+  askBtn.disabled = false;
+  askBtn.textContent = `Ask ${schedule.delegation.friendName || 'friend'} to release`;
+  cancelBtn.classList.add('hidden');
   emergBtn.classList.remove('hidden');
+  emergBtn.disabled = false;
+  emergBtn.textContent = 'Start 72h emergency cooldown';
   nowBtn.classList.add('hidden');
 
   // Cooldown in flight?
@@ -868,6 +889,7 @@ async function refreshUninstallCard() {
     stateEl.textContent = `Waiting for ${schedule.delegation.friendName || 'your friend'} to /approve or /deny in Telegram.`;
     askBtn.disabled = true;
     askBtn.textContent = 'Request pending…';
+    cancelBtn.classList.remove('hidden');
     return;
   }
 

@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('nightowl', {
     cancelPairing: () => ipcRenderer.invoke('friendlock:cancelPairing'),
     getStatus: () => ipcRenderer.invoke('friendlock:getStatus'),
     requestUninstall: () => ipcRenderer.invoke('friendlock:requestUninstall'),
+    cancelPendingUninstallRequest: () => ipcRenderer.invoke('friendlock:cancelPendingUninstallRequest'),
     startEmergencyCooldown: () => ipcRenderer.invoke('friendlock:startEmergencyCooldown'),
     getUninstallGate: () => ipcRenderer.invoke('friendlock:getUninstallGate'),
     onPhaseChange: (cb) => {

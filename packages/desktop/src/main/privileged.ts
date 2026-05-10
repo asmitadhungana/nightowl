@@ -242,9 +242,20 @@ async function installWindowsDaemon(): Promise<{ ok: boolean; error?: string }> 
 }
 
 /**
- * Uninstall daemon
+ * Uninstall daemon.
+ *
+ * Honors NIGHTOWL_UNINSTALL_DRY_RUN=1 — when set, returns ok WITHOUT touching
+ * /Library/LaunchDaemons or invoking sudo-prompt. Used for dev/QA when you want
+ * to exercise the IPC handler + delegation-clearing path without unloading the
+ * real daemon (which would also break any live lock on this machine). Sibling
+ * to NIGHTOWL_DRY_RUN which gates the daemon's halt action.
  */
 export async function uninstallDaemon(): Promise<{ ok: boolean; error?: string }> {
+  if (process.env.NIGHTOWL_UNINSTALL_DRY_RUN === '1') {
+    console.warn('[privileged] NIGHTOWL_UNINSTALL_DRY_RUN=1 — returning ok without touching launchd or filesystem');
+    return { ok: true };
+  }
+
   const platform = os.platform();
 
   try {

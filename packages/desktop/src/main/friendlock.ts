@@ -545,6 +545,31 @@ export async function requestUninstall(): Promise<RequestUninstallResult> {
 }
 
 /**
+ * Cancel an in-flight uninstall request locally — purely a "I changed my mind,
+ * stop showing 'request pending'" action. The bot's queued message and any
+ * future friend decision still flow normally; if the friend /approves the
+ * cancelled reqId, dispatchUninstallDecision sees the reqId no longer matches
+ * pendingUninstallReqId and records the seq without promoting the verdict
+ * (the existing "out-of-band decision" branch).
+ *
+ * We deliberately do NOT also call the bot to cancel server-side. Two reasons:
+ *   1. The friend's prompt has no expiry; even a "this was cancelled" reply
+ *      doesn't undo the social interruption that already happened.
+ *   2. Keeping cancel local-only keeps the desktop responsive even if the bot
+ *      is unreachable. The user re-requesting later mints a fresh reqId.
+ */
+export function cancelPendingUninstallRequest(): { ok: boolean; error?: string } {
+  const schedule = loadSchedule();
+  if (!schedule.delegation) return { ok: false, error: 'No friend lock active' };
+  if (!schedule.delegation.pendingUninstallReqId) {
+    return { ok: false, error: 'No request is pending' };
+  }
+  schedule.delegation.pendingUninstallReqId = null;
+  saveSchedule(schedule);
+  return { ok: true };
+}
+
+/**
  * Start the 72h emergency uninstall cooldown. Once started this CANNOT be
  * cancelled — the cooldown is the safety net for friend-vanishes / hostile-friend
  * scenarios, and an "oops, never mind" button would defang it.
