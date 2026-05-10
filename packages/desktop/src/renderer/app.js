@@ -521,6 +521,10 @@ function showLocked() {
   if (countdownInterval) clearInterval(countdownInterval);
   countdownInterval = setInterval(async () => {
     status = await window.nightowl.getStatus();
+    // Refresh schedule too — delegation.phase, friendRevokedAt, lastUninstallDecision
+    // can all change under us when the bot pushes signed messages. Without this
+    // the locked-screen UI stays frozen at the snapshot taken when showLocked() ran.
+    schedule = await window.nightowl.getSchedule();
     if (!status.active || !status.locked) {
       clearInterval(countdownInterval);
       location.reload();
@@ -839,11 +843,23 @@ async function refreshUninstallCard() {
     return;
   }
 
-  // Friend revoked?
+  // Friend revoked? Two sub-cases — with or without a prior approval.
+  // Past approvals stand: /revoke is forward-looking, the friend cannot
+  // unilaterally retract a previously-issued approval (would defang the
+  // asymmetry under social pressure). So if verdict was approved BEFORE
+  // revoke, the user can still uninstall — just surface that the friend
+  // has stepped away in addition to the prior approval.
   if (schedule.delegation.phase === 'revoked') {
-    stateEl.classList.add('denied');
-    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} stepped away from this lock. They will not approve uninstall — start the 72h emergency cooldown to escape.`;
     askBtn.classList.add('hidden');
+    if (gateStatus.lastDecisionVerdict === 'approved') {
+      stateEl.classList.add('allowed');
+      stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} approved your earlier request and has now stepped away from this lock. Their approval still stands — you may uninstall now.`;
+      emergBtn.classList.add('hidden');
+      nowBtn.classList.remove('hidden');
+    } else {
+      stateEl.classList.add('denied');
+      stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} stepped away from this lock. They will not approve uninstall — start the 72h emergency cooldown to escape.`;
+    }
     return;
   }
 
