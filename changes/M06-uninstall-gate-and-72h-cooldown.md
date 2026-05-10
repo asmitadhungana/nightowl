@@ -138,6 +138,23 @@ step, which is documented in `RUNBOOK.md §8`.
 - Bake a hosted Worker URL into `BOT_URL`. Deferred until the self-hosting story
   is settled; M6 added the packaged-build startup warning as a soft alternative.
 
+## Bugs found during live testing (fixed in commit `6a2afd5`)
+
+- **Renderer's `schedule` was stale on the locked screen.** The 1s tick refreshed
+  `status` via IPC but never re-fetched `schedule`. After a `/revoke` landed,
+  the renderer still saw `delegation.phase === 'active'` even though disk had
+  flipped to `'revoked'` and the gate had moved on. Fix: also call
+  `getSchedule()` in the tick. Anything else on the locked screen that reads
+  from `delegation.*` benefits from the same refresh.
+- **`/revoke` after `/approve` made the Uninstall now button disappear.** The
+  revoked branch in `refreshUninstallCard` returned early without unhiding the
+  button, even when `gateStatus.gate.allowed` was true (because the prior
+  approval still made the gate allow). Fix: split the revoked branch into
+  with-prior-approval (cyan/allowed copy + Uninstall now visible) vs
+  without-prior-approval (red/denied copy + cooldown is the only path).
+  This is the load-bearing "approval survives revoke" semantic — pinned in
+  CLAUDE.md "Load-bearing invariants" so it's not accidentally weakened later.
+
 ## Operational gotchas discovered during M6 bring-up
 
 - **`wrangler secret put` reads from STDIN, not argv.** Putting the value on
