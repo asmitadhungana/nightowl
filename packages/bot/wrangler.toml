@@ -15,6 +15,11 @@ main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Expose this Worker on the account's workers.dev subdomain so it's reachable at
+# https://<name>.<account-subdomain>.workers.dev. Without this flag the Worker
+# uploads but Cloudflare won't route public traffic to it.
+workers_dev = true
+
 # Disable Workers' default request-body logging so a `/setpassword` payload
 # never lands in any operator-visible log surface. Logpush stays off too.
 [observability]
