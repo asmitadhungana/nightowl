@@ -669,6 +669,20 @@ function setupFocus() {
     });
   }
 
+  // Friend Focus toggle — only shown when a delegation/pairing exists. Without
+  // a paired friend the option is meaningless (nobody to /approve), so we
+  // hide it instead of showing a disabled checkbox.
+  const friendToggle = document.getElementById('focus-friend-toggle');
+  const friendNameSpan = document.getElementById('focus-friend-name');
+  if (friendToggle) {
+    if (schedule && schedule.delegation && schedule.delegation.friendName) {
+      friendToggle.classList.remove('hidden');
+      if (friendNameSpan) friendNameSpan.textContent = schedule.delegation.friendName;
+    } else {
+      friendToggle.classList.add('hidden');
+    }
+  }
+
   const focusStartBtn = document.getElementById('focus-start-btn');
   if (focusStartBtn) {
     focusStartBtn.addEventListener('click', async () => {
@@ -677,8 +691,9 @@ function setupFocus() {
         alert('Daemon not running. Install it first or your focus session will not enforce.');
         return;
       }
+      const friendGated = !!document.getElementById('focus-friend-checkbox')?.checked;
       try {
-        const result = await window.nightowl.startFocus({ minutes: selectedFocusMin });
+        const result = await window.nightowl.startFocus({ minutes: selectedFocusMin, friendGated });
         if (result.ok) {
           showFocusActive(result.focus);
         } else {
@@ -695,6 +710,10 @@ function showFocusActive(focus) {
   document.getElementById('edit-mode').classList.add('hidden');
   document.getElementById('locked-mode').classList.add('hidden');
   document.getElementById('focus-mode').classList.remove('hidden');
+
+  // Friend Focus card — show only for friend-gated sessions.
+  setupFocusReleaseCard();
+  refreshFocusReleaseCard(focus);
 
   const endTime = new Date(focus.endTime).getTime();
   const startTime = new Date(focus.startTime).getTime();
@@ -713,7 +732,17 @@ function showFocusActive(focus) {
       `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
     document.getElementById('focus-progress-fill').style.width = `${pct}%`;
 
-    if (remaining <= 0) {
+    // Refresh the friend-release card every tick so /approve from Telegram
+    // surfaces within ~1s of dispatch (and so a friend's early-release
+    // approval flips the card from "Waiting…" to "End focus now").
+    const liveFocus = await window.nightowl.getFocus();
+    if (liveFocus && !liveFocus.active) {
+      // Either timer expired OR user clicked End focus now from the card.
+      // Either way, we're done — fall through to the standard "Done" branch.
+    }
+    refreshFocusReleaseCard(liveFocus || focus);
+
+    if (remaining <= 0 || (liveFocus && !liveFocus.active)) {
       clearInterval(focusInterval);
       document.getElementById('focus-timer').textContent = 'Done!';
       document.getElementById('focus-label').textContent = 'Focus session complete';
@@ -921,6 +950,132 @@ function formatHoursLeft(ms) {
   const m = totalMin % 60;
   if (h <= 0) return `${m}m`;
   return `${h}h ${m}m`;
+}
+
+// ---------------------------------------------------------------------------
+// FRIEND FOCUS — early-release card on the active focus screen (M7)
+// ---------------------------------------------------------------------------
+let focusReleaseCardWired = false;
+
+function setupFocusReleaseCard() {
+  if (focusReleaseCardWired) return;
+  focusReleaseCardWired = true;
+
+  document.getElementById('focus-ask-friend-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.requestFocusRelease();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not send the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (r.result === 'no_friend') {
+      errEl.textContent = 'Your friend has not paired yet — nothing to ask.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const liveFocus = await window.nightowl.getFocus();
+    refreshFocusReleaseCard(liveFocus);
+  };
+
+  document.getElementById('focus-cancel-request-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.cancelPendingFocusRelease();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not cancel the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const liveFocus = await window.nightowl.getFocus();
+    refreshFocusReleaseCard(liveFocus);
+  };
+
+  document.getElementById('focus-end-now-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm('End the focus session now?');
+    if (!ok) return;
+    const r = await window.nightowl.friendlock.endFocusEarly();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not end focus';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    // The 1s focus tick will see active=false and run the "Done" sequence.
+  };
+
+  if (window.nightowl.friendlock.onFocusReleaseDecision) {
+    window.nightowl.friendlock.onFocusReleaseDecision(async () => {
+      const liveFocus = await window.nightowl.getFocus();
+      refreshFocusReleaseCard(liveFocus);
+    });
+  }
+}
+
+async function refreshFocusReleaseCard(focus) {
+  const card = document.getElementById('focus-release-card');
+  if (!card) return;
+
+  // Solo focus → don't show the card at all. Same for ended/missing sessions.
+  if (!focus || !focus.active || !focus.friendGated) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  let gateStatus;
+  try {
+    gateStatus = await window.nightowl.friendlock.getFocusReleaseGate();
+  } catch (e) {
+    return;
+  }
+
+  const stateEl = document.getElementById('focus-release-state');
+  const askBtn = document.getElementById('focus-ask-friend-btn');
+  const cancelBtn = document.getElementById('focus-cancel-request-btn');
+  const endNowBtn = document.getElementById('focus-end-now-btn');
+  const nameSpan = document.getElementById('focus-ask-friend-name');
+
+  const friendName = gateStatus.friendName || 'friend';
+  if (nameSpan) nameSpan.textContent = friendName;
+
+  // Reset every per-button bit each tick so previous states don't stick.
+  stateEl.className = 'uninstall-state';
+  askBtn.classList.remove('hidden');
+  askBtn.disabled = false;
+  askBtn.textContent = `Ask ${friendName} to release`;
+  cancelBtn.classList.add('hidden');
+  endNowBtn.classList.add('hidden');
+
+  // Pending request?
+  if (gateStatus.pendingReleaseReqId && !gateStatus.lastDecisionVerdict) {
+    stateEl.textContent = `Waiting for ${friendName} to /approve or /deny in Telegram.`;
+    askBtn.disabled = true;
+    askBtn.textContent = 'Request pending…';
+    cancelBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Most recent decision was deny?
+  if (gateStatus.lastDecisionVerdict === 'denied') {
+    stateEl.classList.add('denied');
+    stateEl.textContent = `${friendName} denied your last request. Try again or wait the timer out.`;
+    return;
+  }
+
+  // Approved → show End focus now.
+  if (gateStatus.gate.allowed) {
+    stateEl.classList.add('allowed');
+    stateEl.textContent = `${friendName} approved your release. You may end the focus session now.`;
+    askBtn.classList.add('hidden');
+    endNowBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Default: nothing in flight.
+  stateEl.textContent = `Click "Ask ${friendName} to release" to send your friend an /approve|/deny prompt on Telegram.`;
 }
 
 // ---------------------------------------------------------------------------

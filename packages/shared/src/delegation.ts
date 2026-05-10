@@ -7,7 +7,7 @@
  * lives in packages/desktop/src/main/friendlock.ts.
  */
 
-import type { Schedule } from './types.js';
+import type { Schedule, FocusSession } from './types.js';
 
 /**
  * Lifecycle of a delegated lock.
@@ -180,4 +180,49 @@ export function uninstallGate(s: Schedule, nowMs: number = Date.now()): Uninstal
     return { allowed: false, reason: `Your friend stepped away from this lock. Start the 72h emergency cooldown to uninstall.` };
   }
   return { allowed: false, reason: `Friend Lock is active. Ask your friend to approve uninstall, or start the 72h emergency cooldown.` };
+}
+
+/**
+ * Decide whether a Friend-Focus early-release is allowed right now.
+ *
+ * Solo focus (no friendGated, or friendGated=false): not gated by this function
+ *   — solo Focus is uncancellable by design (v1 contract). The renderer should
+ *   not even show the "Need out early?" card for solo sessions.
+ *
+ * Friend-gated focus, no friend pairing exists: should never happen in normal
+ *   flow (the renderer prevents starting friend-gated focus without a pairing),
+ *   but if it does, deny — there's nobody to ask.
+ *
+ * Friend-gated focus, decision approved: allowed.
+ * Friend-gated focus, decision denied: not allowed; user can re-request.
+ * Friend-gated focus, request pending: not allowed; waiting on friend.
+ * Friend-gated focus, no request yet: not allowed; need to ask.
+ *
+ * Note there is NO 72h emergency cooldown for focus — sessions are short
+ * (max 8h per the existing Focus validation), and a "wait it out" worst case
+ * is the natural safety net. The cooldown is reserved for the schedule lock.
+ *
+ * `nowMs` is unused today — accepted for symmetry with `uninstallGate` so
+ * future time-based gates (e.g. "approval expires after N minutes") drop in
+ * without changing the call sites.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function focusReleaseGate(s: Schedule, focus: FocusSession, _nowMs: number = Date.now()): UninstallGate {
+  if (!focus.friendGated) {
+    return { allowed: false, reason: 'Solo focus session — uncancellable by design.' };
+  }
+  if (!isDelegated(s)) {
+    return { allowed: false, reason: 'No friend is paired. Re-pair before starting a friend-gated focus session.' };
+  }
+  const last = focus.lastReleaseDecision;
+  if (last && last.verdict === 'approved') {
+    return { allowed: true, reason: `friend approved at ${last.decidedAt}` };
+  }
+  if (last && last.verdict === 'denied') {
+    return { allowed: false, reason: `Friend denied your last request. Send a new request or wait the timer out.` };
+  }
+  if (focus.pendingReleaseReqId) {
+    return { allowed: false, reason: `Waiting on your friend to /approve or /deny in Telegram.` };
+  }
+  return { allowed: false, reason: `Ask your friend to release this focus session early.` };
 }

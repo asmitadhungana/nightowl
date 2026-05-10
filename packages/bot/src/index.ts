@@ -14,6 +14,7 @@ import { handleTelegramWebhook } from './routes/tg-webhook.js';
 import { handleEnroll } from './routes/enroll.js';
 import { handlePoll } from './routes/poll.js';
 import { handleRequestUninstall } from './routes/request-uninstall.js';
+import { handleRequestFocusRelease } from './routes/request-focus-release.js';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -42,6 +43,10 @@ export default {
 
     if (method === 'POST' && path === '/desktop/request-uninstall') {
       return handleRequestUninstall(req, env);
+    }
+
+    if (method === 'POST' && path === '/desktop/request-focus-release') {
+      return handleRequestFocusRelease(req, env);
     }
 
     return new Response('not found', { status: 404 });

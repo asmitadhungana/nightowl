@@ -25,6 +25,8 @@ import { BrowserWindow } from 'electron';
 import {
   loadSchedule,
   saveSchedule,
+  loadFocus,
+  saveFocus,
   savePasswordHash,
   activateSchedule,
   isLocked,
@@ -35,6 +37,7 @@ import {
   isDelegated,
   makeDelegation,
   uninstallGate,
+  focusReleaseGate,
   emergencyCooldownRemainingMs,
   canStartEmergencyUninstall,
   type DelegationState,
@@ -50,7 +53,7 @@ interface EnrollResponseBody {
 
 interface PollMessage {
   seq: number;
-  kind: 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision';
+  kind: 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision';
   payload: unknown;
   sig: string;
 }
@@ -77,6 +80,13 @@ interface FriendRevokedPayload {
 }
 
 interface UninstallDecisionPayload {
+  reqId: string;
+  verdict: 'approved' | 'denied';
+  decidedAt: string;
+}
+
+/** Same payload shape as UninstallDecisionPayload but a distinct type so dispatchers don't get them confused. */
+interface FocusReleaseDecisionPayload {
   reqId: string;
   verdict: 'approved' | 'denied';
   decidedAt: string;
@@ -349,6 +359,9 @@ async function handleInboxMessage(msg: PollMessage): Promise<void> {
     case 'uninstall_decision':
       await dispatchUninstallDecision(schedule.delegation, msg.payload as UninstallDecisionPayload, msg.seq);
       break;
+    case 'focus_release_decision':
+      await dispatchFocusReleaseDecision(schedule.delegation, msg.payload as FocusReleaseDecisionPayload, msg.seq);
+      break;
     default:
       console.warn('[friendlock] unknown message kind, dropping');
       // Bump consumed seq anyway so we don't refetch it forever.
@@ -476,6 +489,46 @@ async function dispatchUninstallDecision(
   void delegation;
 }
 
+/**
+ * Friend's verdict on an early-release request for a Friend Focus session.
+ * State lives on focus.json (lastReleaseDecision) — distinct from
+ * delegation.lastUninstallDecision so a single approval can't accidentally
+ * green-light both an uninstall AND an early focus release.
+ */
+async function dispatchFocusReleaseDecision(
+  delegation: DelegationState,
+  payload: FocusReleaseDecisionPayload,
+  seq: number
+): Promise<void> {
+  const focus = loadFocus();
+  if (!payload.reqId || (payload.verdict !== 'approved' && payload.verdict !== 'denied')) {
+    console.warn('[friendlock] focus_release_decision malformed; dropping');
+    bumpConsumedSeq(seq);
+    return;
+  }
+  // No active focus, or focus already ended/expired — record seq + drop.
+  if (!focus || !focus.active) {
+    console.warn('[friendlock] focus_release_decision arrived but no active focus session; dropping');
+    bumpConsumedSeq(seq);
+    return;
+  }
+  if (focus.pendingReleaseReqId !== payload.reqId) {
+    console.warn('[friendlock] focus_release_decision for a non-pending reqId; ignoring');
+    bumpConsumedSeq(seq);
+    return;
+  }
+  focus.lastReleaseDecision = {
+    reqId: payload.reqId,
+    verdict: payload.verdict,
+    decidedAt: payload.decidedAt ?? new Date().toISOString(),
+  };
+  focus.pendingReleaseReqId = null;
+  saveFocus(focus);
+  bumpConsumedSeq(seq);
+  emitFocusReleaseDecision(payload.verdict, payload.reqId);
+  void delegation;
+}
+
 function bumpConsumedSeq(seq: number): void {
   const schedule = loadSchedule();
   if (!schedule.delegation) return;
@@ -586,6 +639,130 @@ export function startEmergencyCooldown(): { ok: boolean; startedAt?: string; err
   return { ok: true, startedAt: schedule.delegation.emergencyUninstallStartedAt };
 }
 
+// ---------------------------------------------------------------------------
+// Friend-Focus early-release flow (M7)
+// ---------------------------------------------------------------------------
+
+export interface RequestFocusReleaseResult {
+  ok: boolean;
+  reqId?: string;
+  result?: 'queued' | 'no_friend' | 'duplicate';
+  error?: string;
+}
+
+/**
+ * Ask the friend to /approve early termination of the active focus session.
+ * Mints a reqId, signs, POSTs /desktop/request-focus-release on the bot.
+ * Persists pendingReleaseReqId on focus.json so a restart preserves the wait.
+ */
+export async function requestFocusRelease(): Promise<RequestFocusReleaseResult> {
+  const schedule = loadSchedule();
+  const focus = loadFocus();
+  if (!focus || !focus.active) return { ok: false, error: 'No active focus session' };
+  if (!focus.friendGated) return { ok: false, error: 'This is a solo focus session — uncancellable by design' };
+  if (!isDelegated(schedule) || !schedule.delegation) {
+    return { ok: false, error: 'No friend is paired. Cannot ask for release.' };
+  }
+  if (focus.pendingReleaseReqId) {
+    return { ok: false, error: 'A request is already pending. Wait for the friend to /approve or /deny.' };
+  }
+
+  const reqId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const identity = ensureIdentity();
+  const ts = Date.now();
+  const preimage = `request_focus_release|${schedule.delegation.pairingId}|${reqId}|${ts}`;
+  const sig = signPayload(identity.privateKey, preimage);
+
+  let body: { reqId: string; result: 'queued' | 'no_friend' | 'duplicate' };
+  try {
+    const r = await fetchJson(`${BOT_URL}/desktop/request-focus-release`, {
+      pairingId: schedule.delegation.pairingId,
+      reqId,
+      focusMinutes: focus.minutes,
+      focusStartedAt: focus.startTime,
+      createdAt,
+      ts,
+      sig,
+    });
+    body = r as { reqId: string; result: 'queued' | 'no_friend' | 'duplicate' };
+  } catch (e) {
+    return { ok: false, error: `Bot unreachable: ${(e as Error).message}` };
+  }
+
+  if (body.result === 'queued' || body.result === 'duplicate') {
+    focus.pendingReleaseReqId = reqId;
+    saveFocus(focus);
+    schedulePollSoon();
+  }
+
+  return { ok: true, reqId, result: body.result };
+}
+
+/**
+ * Local-only cancel — clears pendingReleaseReqId on the active focus session.
+ * Same semantics as cancelPendingUninstallRequest: if the friend later /approves
+ * the cancelled reqId, dispatchFocusReleaseDecision sees it's no longer pending
+ * and drops it without promoting the verdict.
+ */
+export function cancelPendingFocusRelease(): { ok: boolean; error?: string } {
+  const focus = loadFocus();
+  if (!focus || !focus.active) return { ok: false, error: 'No active focus session' };
+  if (!focus.pendingReleaseReqId) return { ok: false, error: 'No request is pending' };
+  focus.pendingReleaseReqId = null;
+  saveFocus(focus);
+  return { ok: true };
+}
+
+/**
+ * End a friend-gated focus session early. Allowed iff focusReleaseGate says so
+ * (i.e. friend approved). Solo focus sessions are uncancellable by design and
+ * this function refuses them — that contract is enforced both here and in the
+ * UI (the renderer doesn't surface this button for solo sessions).
+ */
+export function endFocusEarly(): { ok: boolean; error?: string } {
+  const schedule = loadSchedule();
+  const focus = loadFocus();
+  if (!focus || !focus.active) return { ok: false, error: 'No active focus session' };
+  const gate = focusReleaseGate(schedule, focus);
+  if (!gate.allowed) {
+    return { ok: false, error: gate.reason };
+  }
+  // Mark the session ended. Daemon sees active=false on its next tick and stops
+  // enforcing. We deliberately keep the original endTime around for audit.
+  saveFocus({ ...focus, active: false });
+  return { ok: true };
+}
+
+export interface FocusReleaseGateStatus {
+  gate: UninstallGate;
+  pendingReleaseReqId: string | null;
+  lastDecisionVerdict: 'approved' | 'denied' | null;
+  friendGated: boolean;
+  friendName: string | null;
+}
+
+export function getFocusReleaseGateStatus(): FocusReleaseGateStatus {
+  const schedule = loadSchedule();
+  const focus = loadFocus();
+  if (!focus) {
+    return {
+      gate: { allowed: false, reason: 'No active focus session.' },
+      pendingReleaseReqId: null,
+      lastDecisionVerdict: null,
+      friendGated: false,
+      friendName: null,
+    };
+  }
+  return {
+    gate: focusReleaseGate(schedule, focus),
+    pendingReleaseReqId: focus.pendingReleaseReqId ?? null,
+    lastDecisionVerdict: focus.lastReleaseDecision?.verdict ?? null,
+    friendGated: !!focus.friendGated,
+    friendName: schedule.delegation?.friendName ?? null,
+  };
+}
+
 /**
  * Snapshot of "can the user uninstall right now?" — sent to the renderer so
  * the locked-screen can render the right buttons. Cheap; safe to call on every
@@ -675,5 +852,11 @@ function emitUninstallDecision(verdict: 'approved' | 'denied', reqId: string): v
 function emitEmergencyCooldownChanged(): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('friendlock:emergencyCooldownChanged');
+  }
+}
+
+function emitFocusReleaseDecision(verdict: 'approved' | 'denied', reqId: string): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('friendlock:focusReleaseDecision', { verdict, reqId });
   }
 }

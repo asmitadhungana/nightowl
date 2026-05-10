@@ -339,22 +339,35 @@ async function handleDecision(
   await putUninstallRequest(env, ureq);
 
   pairing.botSeq += 1;
+  // Route to the right signed message kind based on what the friend was asked
+  // for. uninstall_decision and focus_release_decision share payload shape but
+  // are distinct on the wire so a single approval can't accidentally green-light
+  // both actions on the desktop side.
+  const messageKind = ureq.kind === 'focus_release' ? 'focus_release_decision' : 'uninstall_decision';
   const payload = { reqId: ureq.reqId, verdict, decidedAt: ureq.decidedAt };
-  const preimage = botMessagePreimage(pairing.pairingId, pairing.botSeq, 'uninstall_decision', payload);
+  const preimage = botMessagePreimage(pairing.pairingId, pairing.botSeq, messageKind, payload);
   const sig = await botSign(env.BOT_ED25519_PRIVKEY, preimage);
   const message: InboxMessage = {
     seq: pairing.botSeq,
-    kind: 'uninstall_decision',
+    kind: messageKind,
     payload,
     sig,
   };
   await appendInbox(env, pairing.pairingId, message);
   await putPairing(env, pairing);
 
-  if (verdict === 'approved') {
-    await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Approved. Your friend's NightOwl will allow uninstall within ~10 seconds.");
+  if (ureq.kind === 'focus_release') {
+    if (verdict === 'approved') {
+      await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Approved. Your friend can end their focus session within ~10 seconds.");
+    } else {
+      await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Denied. Their focus session will run to completion as planned.");
+    }
   } else {
-    await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Denied. Your friend's NightOwl will refuse this uninstall request. They can either wait out the lock or start the 72-hour emergency cooldown.");
+    if (verdict === 'approved') {
+      await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Approved. Your friend's NightOwl will allow uninstall within ~10 seconds.");
+    } else {
+      await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Denied. Your friend's NightOwl will refuse this uninstall request. They can either wait out the lock or start the 72-hour emergency cooldown.");
+    }
   }
 }
 
@@ -384,6 +397,36 @@ Reply with ONE of:
 If you don't reply, your friend can escape on their own after a 72-hour cooldown — that's the safety net so you're never on the hook.`;
   const r = await sendMessage(env.TG_BOT_TOKEN, friendChatId, txt);
   // sendMessage returns the parsed Telegram response; pull message_id if present.
+  const msgId = (r as { result?: { message_id?: number } } | null)?.result?.message_id ?? null;
+  return msgId;
+}
+
+/**
+ * Internal — invoked from /desktop/request-focus-release. DMs the friend with
+ * /approve and /deny commands and the focus session context (how long they
+ * committed to, when it started). No 72h-cooldown safety net mentioned because
+ * focus sessions are short — the natural fallback is "wait the timer out."
+ */
+export async function notifyFriendOfFocusReleaseRequest(
+  env: Env,
+  pairing: Pairing,
+  ureq: UninstallRequest,
+  ctx: { focusMinutes: number; focusStartedAt: string }
+): Promise<number | null> {
+  if (!pairing.friendChatId) return null;
+  const friendChatId = Number(pairing.friendChatId);
+  if (Number.isNaN(friendChatId)) return null;
+
+  const txt = `🦉 Your friend wants to end their focus session early.
+
+They committed to ${ctx.focusMinutes} minutes (started ${ctx.focusStartedAt}). If you approve, NightOwl ends the focus session and they're free. If you deny, the timer runs to completion as planned.
+
+Reply with ONE of:
+/approve ${ureq.reqId}
+/deny ${ureq.reqId}
+
+If you don't reply, the timer just runs out on its own — short focus sessions don't have a 72h cooldown escape hatch.`;
+  const r = await sendMessage(env.TG_BOT_TOKEN, friendChatId, txt);
   const msgId = (r as { result?: { message_id?: number } } | null)?.result?.message_id ?? null;
   return msgId;
 }

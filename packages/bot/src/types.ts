@@ -4,10 +4,18 @@ export type PairingStatus = 'pending' | 'active' | 'revoked';
 /** State of an in-flight uninstall request. */
 export type UninstallReqStatus = 'pending' | 'approved' | 'denied';
 
-/** A request from the desktop asking the friend to approve uninstall. */
+/**
+ * Discriminator for what kind of approval the friend is being asked for.
+ * Both share the same /approve <REQID> /deny <REQID> Telegram interface.
+ */
+export type ApprovalKind = 'uninstall' | 'focus_release';
+
+/** A request from the desktop asking the friend to approve an action. */
 export interface UninstallRequest {
   reqId: string;
   pairingId: string;
+  /** What the friend is being asked to approve. */
+  kind: ApprovalKind;
   /** ISO timestamp the desktop posted the request. */
   createdAt: string;
   status: UninstallReqStatus;
@@ -48,11 +56,14 @@ export interface Pairing {
  * - friend_revoked — friend ran /revoke. Lock continues, but the desktop knows
  *                    not to expect any uninstall approval; surface the safety
  *                    net (72h emergency cooldown) more prominently.
- * - uninstall_decision — friend ran /approve <reqId> or /deny <reqId>; payload
- *                    carries reqId + verdict so the desktop can match it back to
- *                    its pending request.
+ * - uninstall_decision    — friend ran /approve <reqId> or /deny <reqId> for an
+ *                    uninstall request; payload carries reqId + verdict.
+ * - focus_release_decision — same shape as uninstall_decision but for early
+ *                    termination of a Friend Focus session. Separate kind so a
+ *                    single approval doesn't accidentally green-light both
+ *                    actions on the desktop side.
  */
-export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision';
+export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision';
 
 /** A signed message in the inbox queue. */
 export interface InboxMessage {
@@ -128,5 +139,27 @@ export interface RequestUninstallResponse {
   /** Echoed back so the desktop can correlate. */
   reqId: string;
   /** "queued" if the friend was prompted, "no_friend" if the pairing has no friend yet. */
+  result: 'queued' | 'no_friend' | 'duplicate';
+}
+
+/**
+ * Desktop posts to /desktop/request-focus-release to ask the friend for
+ * permission to end an active friend-gated focus session early.
+ */
+export interface RequestFocusReleaseBody {
+  pairingId: string;
+  reqId: string;
+  /** Total duration of the focus session in minutes — surfaced to the friend for context. */
+  focusMinutes: number;
+  /** ISO timestamp the focus session started. */
+  focusStartedAt: string;
+  createdAt: string;
+  ts: number;
+  /** Base64 Ed25519 signature over "request_focus_release|"+pairingId+"|"+reqId+"|"+ts. */
+  sig: string;
+}
+
+export interface RequestFocusReleaseResponse {
+  reqId: string;
   result: 'queued' | 'no_friend' | 'duplicate';
 }

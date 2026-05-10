@@ -5,11 +5,22 @@ import {
   emergencyCooldownRemainingMs,
   canStartEmergencyUninstall,
   uninstallGate,
+  focusReleaseGate,
   EMERGENCY_COOLDOWN_MS,
 } from '../delegation.js';
 import type { DelegationState } from '../delegation.js';
-import type { Schedule } from '../types.js';
+import type { Schedule, FocusSession } from '../types.js';
 import { DEFAULT_SCHEDULE } from '../types.js';
+
+function focus(overrides: Partial<FocusSession> = {}): FocusSession {
+  return {
+    active: true,
+    startTime: '2026-05-10T12:00:00.000Z',
+    endTime: '2026-05-10T12:30:00.000Z',
+    minutes: 30,
+    ...overrides,
+  };
+}
 
 function scheduleWith(delegation: DelegationState | null | undefined): Schedule {
   return { ...DEFAULT_SCHEDULE, days: { ...DEFAULT_SCHEDULE.days }, delegation };
@@ -199,5 +210,63 @@ describe('uninstallGate', () => {
     };
     const r = uninstallGate(scheduleWith(d), now);
     expect(r.allowed).toBe(true);
+  });
+});
+
+describe('focusReleaseGate', () => {
+  const now = Date.UTC(2026, 4, 10, 12, 0, 0);
+
+  it('blocks release on a solo focus session (no friend gating)', () => {
+    const r = focusReleaseGate(scheduleWith(makeDelegation('p1')), focus({ friendGated: false }), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/solo/i);
+  });
+
+  it('blocks release when friendGated but no delegation paired', () => {
+    const r = focusReleaseGate(scheduleWith(null), focus({ friendGated: true }), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/no friend is paired/i);
+  });
+
+  it('blocks release when friendGated, paired, no request yet', () => {
+    const r = focusReleaseGate(scheduleWith(makeDelegation('p1')), focus({ friendGated: true }), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/Ask your friend/i);
+  });
+
+  it('blocks release when a request is pending and no decision yet', () => {
+    const f = focus({ friendGated: true, pendingReleaseReqId: 'req-1' });
+    const r = focusReleaseGate(scheduleWith(makeDelegation('p1')), f, now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/Waiting/i);
+  });
+
+  it('allows release when friend approved', () => {
+    const f = focus({
+      friendGated: true,
+      lastReleaseDecision: { reqId: 'req-1', verdict: 'approved', decidedAt: '2026-05-10T12:05:00.000Z' },
+    });
+    const r = focusReleaseGate(scheduleWith(makeDelegation('p1')), f, now);
+    expect(r.allowed).toBe(true);
+  });
+
+  it('blocks release when friend denied', () => {
+    const f = focus({
+      friendGated: true,
+      lastReleaseDecision: { reqId: 'req-1', verdict: 'denied', decidedAt: '2026-05-10T12:05:00.000Z' },
+    });
+    const r = focusReleaseGate(scheduleWith(makeDelegation('p1')), f, now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/Friend denied/i);
+  });
+
+  it('does NOT honor schedule-lock decisions for focus release (separate verdicts)', () => {
+    // Friend approved an UNINSTALL request; that should not green-light a focus release.
+    const d = {
+      ...makeDelegation('p1'),
+      lastUninstallDecision: { reqId: 'req-uninstall', verdict: 'approved' as const, decidedAt: '2026-05-10T11:00:00.000Z' },
+    };
+    const r = focusReleaseGate(scheduleWith(d), focus({ friendGated: true }), now);
+    expect(r.allowed).toBe(false);
   });
 });

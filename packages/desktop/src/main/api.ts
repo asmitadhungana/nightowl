@@ -67,6 +67,12 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('friendlock:cancelPendingUninstallRequest', () => friendlock.cancelPendingUninstallRequest());
   ipcMain.handle('friendlock:startEmergencyCooldown', () => friendlock.startEmergencyCooldown());
   ipcMain.handle('friendlock:getUninstallGate', () => friendlock.getUninstallGateStatus());
+
+  // v2.1 Friend Focus — early release gate
+  ipcMain.handle('friendlock:requestFocusRelease', () => friendlock.requestFocusRelease());
+  ipcMain.handle('friendlock:cancelPendingFocusRelease', () => friendlock.cancelPendingFocusRelease());
+  ipcMain.handle('friendlock:endFocusEarly', () => friendlock.endFocusEarly());
+  ipcMain.handle('friendlock:getFocusReleaseGate', () => friendlock.getFocusReleaseGateStatus());
 }
 
 /**
@@ -251,13 +257,18 @@ async function handleGetFocus(): Promise<{
 }
 
 /**
- * Start focus session
+ * Start focus session.
+ *
+ * v2.1: friendGated opts into Friend Focus — the user's paired friend can
+ * /approve early termination via Telegram. Solo focus (default) keeps v1
+ * behavior, uncancellable until the timer runs out. Friend-gated requires a
+ * paired friend (delegation) to exist; otherwise we refuse.
  */
 async function handleStartFocus(
   _event: Electron.IpcMainInvokeEvent,
-  data: { minutes: number }
+  data: { minutes: number; friendGated?: boolean }
 ): Promise<{ ok: boolean; focus?: FocusSession; error?: string }> {
-  const { minutes } = data;
+  const { minutes, friendGated } = data;
 
   // Validate minutes
   if (!minutes || minutes < 1 || minutes > 480) {
@@ -271,8 +282,17 @@ async function handleStartFocus(
     return { ok: false, error: 'Already in curfew' };
   }
 
-  // Create focus session
-  const focus = createFocusSession(minutes);
+  if (friendGated && !isDelegated(schedule)) {
+    return { ok: false, error: 'No friend is paired. Pair a friend first or start a solo focus session.' };
+  }
+
+  // Create focus session — start as a v1 session, then attach friend-gating.
+  const focus: FocusSession = {
+    ...createFocusSession(minutes),
+    friendGated: !!friendGated,
+    pendingReleaseReqId: null,
+    lastReleaseDecision: null,
+  };
   saveFocus(focus);
 
   return { ok: true, focus };

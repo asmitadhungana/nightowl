@@ -182,6 +182,7 @@ If a future request would relax any of these, push back. These are the rules tha
 - **Every bot↔desktop message is Ed25519-signed.** Bot pubkey (`BOT_PUBKEY_HEX`) is baked into the desktop build; a compromised Worker can drop messages but cannot forge them. Replay defense: per-pairing `lastConsumedSeq`.
 - **Friend powers are scoped:** set initial password, /approve|/deny uninstall, /revoke. Friend canNOT extend lock duration, modify the schedule, change the password mid-lock, or be swapped for a more compliant friend mid-lock.
 - **`/revoke` is forward-looking — past approvals stand.** Once the friend has /approve'd an uninstall request, /revoke does NOT retract that approval; the user can still uninstall on the prior decision. The bot's revoke text is "you won't be *asked* to approve uninstall" (future tense). Allowing retraction would let a friend under social pressure trap the user — defangs the asymmetry. The locked-screen UI surfaces both facts when this state arises.
+- **Approvals are scoped per request kind — one /approve does NOT cross-bless other actions.** Friend approving an uninstall request does not also green-light an early focus release, and vice versa. Each `kind` on the bot side maps to a distinct signed message kind on the wire and a distinct verdict store on the desktop side (`delegation.lastUninstallDecision` vs `focus.lastReleaseDecision`). When adding a new approval kind, do the same — never share a verdict slot.
 - **72h emergency uninstall cooldown is the safety net AND is non-cancellable** once started. Cancellable would defang it under social pressure (hostile-friend scenario).
 - **`uninstallGate(schedule)` in `packages/shared/src/delegation.ts` is the single source of truth** for "may the user uninstall right now?" Both the desktop API gate and the renderer UI consume it. Don't duplicate the branching elsewhere.
 
@@ -192,6 +193,7 @@ Each milestone has a file in `changes/M<NN>-*.md` covering file-by-file changes,
 - **M1–M4** — shared foundation, Worker bot, desktop orchestrator, renderer pairing wizard (commits `ee27cbf` → `aedef53`)
 - **M5** — first Worker deploy (Cloudflare upload, no commit)
 - **M6** — uninstall request flow + 72h cooldown + `/revoke` `/approve` `/deny` + delegated `daemon:uninstall` gating
+- **M7** — Friend Focus integration: opt-in friend-gated Focus sessions; same friend, distinct approval scope; new bot endpoint `/desktop/request-focus-release` + signed `focus_release_decision` message kind
 
 For first-time bot bring-up, see `RUNBOOK.md §8`.
 

@@ -71,7 +71,12 @@ export function pendingMessages(inbox: InboxMessage[], lastSeq: number): InboxMe
 
 export async function getUninstallRequest(env: Env, reqId: string): Promise<UninstallRequest | null> {
   const raw = await env.NIGHTOWL_KV.get(UREQ_PREFIX + reqId);
-  return raw ? (JSON.parse(raw) as UninstallRequest) : null;
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as UninstallRequest;
+  // Records persisted before M7 don't carry a `kind` field. Default to
+  // 'uninstall' so legacy KV entries still match the right approval flow.
+  if (!parsed.kind) parsed.kind = 'uninstall';
+  return parsed;
 }
 
 export async function putUninstallRequest(env: Env, req: UninstallRequest): Promise<void> {

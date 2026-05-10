@@ -1,29 +1,27 @@
 /**
- * POST /desktop/request-uninstall
+ * POST /desktop/request-focus-release
  *
- * Desktop asks the bot to DM the friend with an /approve|/deny prompt.
+ * Desktop asks the bot to DM the friend with /approve|/deny for early
+ * termination of an active Friend Focus session. Mirror of
+ * /desktop/request-uninstall but with a 'focus_release' kind so the bot
+ * can route /approve to the right signed message kind.
  *
- * Body: { pairingId, reqId, createdAt, ts, sig } where
- *   sig = Ed25519(priv, "request_uninstall|"+pairingId+"|"+reqId+"|"+ts)
- *
- * Idempotent: posting the same reqId twice returns { result: 'duplicate' } without
- * re-DMing the friend. This matters because the desktop retries on flaky network
- * and we don't want to spam the friend.
+ * Idempotent on reqId — same as the uninstall flow.
  */
 
 import type { Env } from '../env.js';
-import type { RequestUninstallBody, RequestUninstallResponse, UninstallRequest } from '../types.js';
+import type { RequestFocusReleaseBody, RequestFocusReleaseResponse, UninstallRequest } from '../types.js';
 import { verifyDesktopSignature } from '../crypto.js';
 import { getPairing, getUninstallRequest, putUninstallRequest } from '../kv.js';
 import { jsonResponse, badRequest, notFound } from '../response.js';
-import { notifyFriendOfUninstallRequest } from './tg-webhook.js';
+import { notifyFriendOfFocusReleaseRequest } from './tg-webhook.js';
 
 const SKEW_TOLERANCE_MS = 60_000;
 
-export async function handleRequestUninstall(req: Request, env: Env): Promise<Response> {
-  let body: RequestUninstallBody;
+export async function handleRequestFocusRelease(req: Request, env: Env): Promise<Response> {
+  let body: RequestFocusReleaseBody;
   try {
-    body = (await req.json()) as RequestUninstallBody;
+    body = (await req.json()) as RequestFocusReleaseBody;
   } catch {
     return badRequest('invalid JSON');
   }
@@ -35,6 +33,10 @@ export async function handleRequestUninstall(req: Request, env: Env): Promise<Re
   if (typeof body.ts !== 'number') return badRequest('ts must be a number');
   if (typeof body.sig !== 'string') return badRequest('sig must be a string');
   if (typeof body.createdAt !== 'string') return badRequest('createdAt must be ISO timestamp');
+  if (typeof body.focusMinutes !== 'number' || body.focusMinutes < 1 || body.focusMinutes > 480) {
+    return badRequest('focusMinutes must be between 1 and 480');
+  }
+  if (typeof body.focusStartedAt !== 'string') return badRequest('focusStartedAt must be ISO timestamp');
 
   if (Math.abs(Date.now() - body.ts) > SKEW_TOLERANCE_MS) {
     return badRequest('ts skew too large; check system clock');
@@ -43,27 +45,25 @@ export async function handleRequestUninstall(req: Request, env: Env): Promise<Re
   const pairing = await getPairing(env, body.pairingId);
   if (!pairing) return notFound('pairing not found');
 
-  const preimage = `request_uninstall|${body.pairingId}|${body.reqId}|${body.ts}`;
+  const preimage = `request_focus_release|${body.pairingId}|${body.reqId}|${body.ts}`;
   const ok = await verifyDesktopSignature(pairing.userPubkeyHex, preimage, body.sig);
   if (!ok) return badRequest('signature does not verify');
 
-  // Friend hasn't paired yet — nothing to ask.
   if (!pairing.friendChatId) {
-    const resp: RequestUninstallResponse = { reqId: body.reqId, result: 'no_friend' };
+    const resp: RequestFocusReleaseResponse = { reqId: body.reqId, result: 'no_friend' };
     return jsonResponse(resp);
   }
 
-  // Idempotent: same reqId already in flight or decided → don't re-DM.
   const existing = await getUninstallRequest(env, body.reqId);
   if (existing) {
-    const resp: RequestUninstallResponse = { reqId: body.reqId, result: 'duplicate' };
+    const resp: RequestFocusReleaseResponse = { reqId: body.reqId, result: 'duplicate' };
     return jsonResponse(resp);
   }
 
   const ureq: UninstallRequest = {
     reqId: body.reqId,
     pairingId: body.pairingId,
-    kind: 'uninstall',
+    kind: 'focus_release',
     createdAt: body.createdAt,
     status: 'pending',
     decidedAt: null,
@@ -71,14 +71,15 @@ export async function handleRequestUninstall(req: Request, env: Env): Promise<Re
   };
   await putUninstallRequest(env, ureq);
 
-  // DM the friend. Best-effort — if Telegram is down the desktop can re-request
-  // (idempotency keys this off reqId so the user must mint a fresh one to retry).
-  const promptMessageId = await notifyFriendOfUninstallRequest(env, pairing, ureq);
+  const promptMessageId = await notifyFriendOfFocusReleaseRequest(env, pairing, ureq, {
+    focusMinutes: body.focusMinutes,
+    focusStartedAt: body.focusStartedAt,
+  });
   if (promptMessageId != null) {
     ureq.promptMessageId = promptMessageId;
     await putUninstallRequest(env, ureq);
   }
 
-  const resp: RequestUninstallResponse = { reqId: body.reqId, result: 'queued' };
+  const resp: RequestFocusReleaseResponse = { reqId: body.reqId, result: 'queued' };
   return jsonResponse(resp);
 }

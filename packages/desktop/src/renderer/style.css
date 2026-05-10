@@ -471,3 +471,26 @@ h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
   border-color: rgba(255, 100, 100, 0.4);
   color: rgb(255, 140, 140);
 }
+
+/* Friend Focus opt-in toggle on the focus card */
+.focus-friend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 10px 0 14px;
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.focus-friend-toggle input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.focus-friend-toggle:hover {
+  border-color: rgba(0, 212, 255, 0.5);
+}

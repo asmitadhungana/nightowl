@@ -39,6 +39,16 @@ contextBridge.exposeInMainWorld('nightowl', {
     cancelPendingUninstallRequest: () => ipcRenderer.invoke('friendlock:cancelPendingUninstallRequest'),
     startEmergencyCooldown: () => ipcRenderer.invoke('friendlock:startEmergencyCooldown'),
     getUninstallGate: () => ipcRenderer.invoke('friendlock:getUninstallGate'),
+    // v2.1 Friend Focus
+    requestFocusRelease: () => ipcRenderer.invoke('friendlock:requestFocusRelease'),
+    cancelPendingFocusRelease: () => ipcRenderer.invoke('friendlock:cancelPendingFocusRelease'),
+    endFocusEarly: () => ipcRenderer.invoke('friendlock:endFocusEarly'),
+    getFocusReleaseGate: () => ipcRenderer.invoke('friendlock:getFocusReleaseGate'),
+    onFocusReleaseDecision: (cb) => {
+      const handler = (_e, p) => cb(p);
+      ipcRenderer.on('friendlock:focusReleaseDecision', handler);
+      return () => ipcRenderer.removeListener('friendlock:focusReleaseDecision', handler);
+    },
     onPhaseChange: (cb) => {
       const handler = (_e, phase) => cb(phase);
       ipcRenderer.on('friendlock:phaseChanged', handler);

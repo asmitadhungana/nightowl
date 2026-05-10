@@ -101,6 +101,10 @@
             <span>min</span>
           </div>
         </div>
+        <label id="focus-friend-toggle" class="focus-friend-toggle hidden">
+          <input type="checkbox" id="focus-friend-checkbox">
+          <span>🔒 Friend Focus — let <span id="focus-friend-name">your friend</span> hold the early-out key</span>
+        </label>
         <button id="focus-start-btn" class="big-btn focus-go" disabled>⚡ Start Focus</button>
       </section>
     </div>
@@ -116,6 +120,21 @@
         <div id="focus-timer" class="focus-timer">00:00</div>
         <div id="focus-label" class="focus-label">remaining</div>
         <div class="focus-progress-bar"><div id="focus-progress-fill" class="progress-fill"></div></div>
+      </section>
+
+      <!-- Friend Focus — only visible when the active session is friend-gated -->
+      <section id="focus-release-card" class="card hidden">
+        <h2>Need out early?</h2>
+        <p class="muted">
+          You opted into Friend Focus — your friend holds the bail-out key. Send them a request and they can /approve in Telegram. If you change your mind, you can just wait the timer out instead.
+        </p>
+        <div id="focus-release-state" class="uninstall-state"></div>
+        <div class="modal-buttons">
+          <button id="focus-ask-friend-btn" class="modal-btn confirm">Ask <span id="focus-ask-friend-name">friend</span> to release</button>
+          <button id="focus-cancel-request-btn" class="modal-btn cancel hidden">Cancel pending request</button>
+          <button id="focus-end-now-btn" class="modal-btn confirm hidden">End focus now</button>
+        </div>
+        <div id="focus-release-error" class="modal-error hidden"></div>
       </section>
     </div>
 
