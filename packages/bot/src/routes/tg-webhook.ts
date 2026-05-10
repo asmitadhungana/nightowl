@@ -19,6 +19,8 @@ import {
   getPairing,
   putPairing,
   appendInbox,
+  getUninstallRequest,
+  putUninstallRequest,
 } from '../kv.js';
 import {
   bcryptHash,
@@ -26,7 +28,7 @@ import {
   botSign,
   canonicalJson,
 } from '../crypto.js';
-import type { InboxMessage, Pairing } from '../types.js';
+import type { InboxMessage, Pairing, UninstallRequest } from '../types.js';
 import { emptyOk } from '../response.js';
 
 export async function handleTelegramWebhook(req: Request, env: Env, secret: string): Promise<Response> {
@@ -74,6 +76,14 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
       await sendMessage(env.TG_BOT_TOKEN, chatId, HELP_MESSAGE);
     } else if (text === '/status') {
       await handleStatus(env, chatId);
+    } else if (text === '/revoke') {
+      await handleRevoke(env, chatId);
+    } else if (text.startsWith('/approve')) {
+      const reqId = text.slice('/approve'.length).trim();
+      await handleDecision(env, chatId, reqId, 'approved');
+    } else if (text.startsWith('/deny')) {
+      const reqId = text.slice('/deny'.length).trim();
+      await handleDecision(env, chatId, reqId, 'denied');
     } else {
       await sendMessage(env.TG_BOT_TOKEN, chatId, "I don't recognize that. Type /help for what I can do.");
     }
@@ -100,6 +110,9 @@ const HELP_MESSAGE = `Commands:
 /pair <CODE>         — claim a pair code your friend gave you
 /setpassword <PW>    — set their lock password (sent over Telegram, deleted immediately)
 /status              — show your active pairings
+/revoke              — step away from this lock. The lock keeps running, but you won't be asked to approve uninstall. The user falls back on the 72h emergency cooldown.
+/approve <REQID>     — approve a pending uninstall request from the user
+/deny <REQID>        — deny a pending uninstall request
 /help                — this message
 
 Privacy: I never store your password. I hash it in memory (bcrypt) and forward only the hash to your friend's machine.`;
@@ -241,4 +254,136 @@ async function findActivePairingByFriend(env: Env, friendChatId: string): Promis
   // dep graph honest; tree-shaker drops it.
   void canonicalJson;
   return null;
+}
+
+/**
+ * Handle /revoke. The friend is opting out of approving uninstall. The lock
+ * itself is unaffected — it continues to lockEndDate. We push a signed
+ * `friend_revoked` message so the desktop can surface the 72h emergency
+ * cooldown more prominently.
+ */
+async function handleRevoke(env: Env, chatId: number): Promise<void> {
+  const pairing = await findActivePairingByFriend(env, String(chatId));
+  if (!pairing) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "No active pairing found. Nothing to revoke.");
+    return;
+  }
+  if (pairing.status === 'revoked') {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You've already revoked this pairing. Nothing to do.");
+    return;
+  }
+
+  pairing.status = 'revoked';
+  pairing.botSeq += 1;
+
+  const payload = { revokedAt: new Date().toISOString() };
+  const preimage = botMessagePreimage(pairing.pairingId, pairing.botSeq, 'friend_revoked', payload);
+  const sig = await botSign(env.BOT_ED25519_PRIVKEY, preimage);
+  const message: InboxMessage = {
+    seq: pairing.botSeq,
+    kind: 'friend_revoked',
+    payload,
+    sig,
+  };
+  await appendInbox(env, pairing.pairingId, message);
+  await putPairing(env, pairing);
+
+  await sendMessage(
+    env.TG_BOT_TOKEN,
+    chatId,
+    "✓ You've stepped away. The lock will continue until it expires on its own. Your friend can still escape via the 72-hour emergency cooldown built into NightOwl. You won't be asked to approve uninstall."
+  );
+}
+
+/**
+ * Handle /approve <REQID> or /deny <REQID>. Friend is responding to a
+ * desktop-initiated uninstall request. We mark the request as decided and
+ * push a signed `uninstall_decision` message so the desktop can act on it.
+ *
+ * Idempotent: a second /approve on the same reqId is a no-op (we still echo
+ * "already approved" so the friend doesn't feel ignored).
+ */
+async function handleDecision(
+  env: Env,
+  chatId: number,
+  reqId: string,
+  verdict: 'approved' | 'denied'
+): Promise<void> {
+  if (!reqId || !/^[0-9a-f-]{36}$/.test(reqId)) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `Usage: /${verdict === 'approved' ? 'approve' : 'deny'} <REQID>\n\nThe REQID is the long ID I sent you when your friend requested uninstall.`);
+    return;
+  }
+
+  const ureq = await getUninstallRequest(env, reqId);
+  if (!ureq) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "I don't have a record of that request ID. It may have expired (requests expire after 7 days) or never existed.");
+    return;
+  }
+
+  const pairing = await getPairing(env, ureq.pairingId);
+  if (!pairing) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "The pairing for that request is gone. Nothing to do.");
+    return;
+  }
+  if (pairing.friendChatId !== String(chatId)) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "That request is not addressed to you. Ignored.");
+    return;
+  }
+  if (ureq.status !== 'pending') {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `Already ${ureq.status}. No change.`);
+    return;
+  }
+
+  ureq.status = verdict;
+  ureq.decidedAt = new Date().toISOString();
+  await putUninstallRequest(env, ureq);
+
+  pairing.botSeq += 1;
+  const payload = { reqId: ureq.reqId, verdict, decidedAt: ureq.decidedAt };
+  const preimage = botMessagePreimage(pairing.pairingId, pairing.botSeq, 'uninstall_decision', payload);
+  const sig = await botSign(env.BOT_ED25519_PRIVKEY, preimage);
+  const message: InboxMessage = {
+    seq: pairing.botSeq,
+    kind: 'uninstall_decision',
+    payload,
+    sig,
+  };
+  await appendInbox(env, pairing.pairingId, message);
+  await putPairing(env, pairing);
+
+  if (verdict === 'approved') {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Approved. Your friend's NightOwl will allow uninstall within ~10 seconds.");
+  } else {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "✓ Denied. Your friend's NightOwl will refuse this uninstall request. They can either wait out the lock or start the 72-hour emergency cooldown.");
+  }
+}
+
+/**
+ * Internal — invoked from /desktop/request-uninstall. DMs the friend with the
+ * /approve and /deny commands and the human-readable context for the request.
+ *
+ * Exported so packages/bot/src/routes/request-uninstall.ts can call it.
+ */
+export async function notifyFriendOfUninstallRequest(
+  env: Env,
+  pairing: Pairing,
+  ureq: UninstallRequest
+): Promise<number | null> {
+  if (!pairing.friendChatId) return null;
+  const friendChatId = Number(pairing.friendChatId);
+  if (Number.isNaN(friendChatId)) return null;
+
+  const txt = `🦉 Your friend wants to uninstall NightOwl.
+
+Their lock is still active. If you approve, NightOwl exits and the lock ends. If you deny, the lock continues running.
+
+Reply with ONE of:
+/approve ${ureq.reqId}
+/deny ${ureq.reqId}
+
+If you don't reply, your friend can escape on their own after a 72-hour cooldown — that's the safety net so you're never on the hook.`;
+  const r = await sendMessage(env.TG_BOT_TOKEN, friendChatId, txt);
+  // sendMessage returns the parsed Telegram response; pull message_id if present.
+  const msgId = (r as { result?: { message_id?: number } } | null)?.result?.message_id ?? null;
+  return msgId;
 }

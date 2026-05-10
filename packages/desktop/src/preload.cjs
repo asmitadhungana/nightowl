@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('nightowl', {
     enroll: () => ipcRenderer.invoke('friendlock:enroll'),
     cancelPairing: () => ipcRenderer.invoke('friendlock:cancelPairing'),
     getStatus: () => ipcRenderer.invoke('friendlock:getStatus'),
+    requestUninstall: () => ipcRenderer.invoke('friendlock:requestUninstall'),
+    startEmergencyCooldown: () => ipcRenderer.invoke('friendlock:startEmergencyCooldown'),
+    getUninstallGate: () => ipcRenderer.invoke('friendlock:getUninstallGate'),
     onPhaseChange: (cb) => {
       const handler = (_e, phase) => cb(phase);
       ipcRenderer.on('friendlock:phaseChanged', handler);
@@ -49,6 +52,16 @@ contextBridge.exposeInMainWorld('nightowl', {
       const handler = (_e, p) => cb(p);
       ipcRenderer.on('friendlock:botUnreachable', handler);
       return () => ipcRenderer.removeListener('friendlock:botUnreachable', handler);
+    },
+    onUninstallDecision: (cb) => {
+      const handler = (_e, p) => cb(p);
+      ipcRenderer.on('friendlock:uninstallDecision', handler);
+      return () => ipcRenderer.removeListener('friendlock:uninstallDecision', handler);
+    },
+    onEmergencyCooldownChanged: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on('friendlock:emergencyCooldownChanged', handler);
+      return () => ipcRenderer.removeListener('friendlock:emergencyCooldownChanged', handler);
     },
   },
 });

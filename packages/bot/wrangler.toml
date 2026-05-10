@@ -24,8 +24,8 @@ enabled = false
 # NIGHTOWL_KV` returned for you. The `preview_id` is for `wrangler dev`.
 [[kv_namespaces]]
 binding = "NIGHTOWL_KV"
-id = "REPLACE_WITH_PRODUCTION_KV_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+id = "06289dbd93194d78b47dc69ce2312828"
+preview_id = "0298c9266d9540099f7d5bc2169602c6"
 
 # Secrets are NOT set here. Use `wrangler secret put <NAME>` for each:
 #   TG_BOT_TOKEN

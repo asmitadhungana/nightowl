@@ -24,6 +24,8 @@ import {
   verifyPassword,
   validatePassword,
   validateSchedule,
+  isDelegated,
+  uninstallGate,
   type Schedule,
   type FocusSession,
   type Status,
@@ -60,6 +62,10 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('friendlock:enroll', () => friendlock.enroll());
   ipcMain.handle('friendlock:cancelPairing', () => friendlock.cancelEnrollment());
   ipcMain.handle('friendlock:getStatus', () => friendlock.getDelegationStatus());
+  // v2 Friend Lock — uninstall gate
+  ipcMain.handle('friendlock:requestUninstall', () => friendlock.requestUninstall());
+  ipcMain.handle('friendlock:startEmergencyCooldown', () => friendlock.startEmergencyCooldown());
+  ipcMain.handle('friendlock:getUninstallGate', () => friendlock.getUninstallGateStatus());
 }
 
 /**
@@ -309,15 +315,37 @@ async function handleDaemonInstall(): Promise<{ ok: boolean; error?: string }> {
 }
 
 /**
- * Uninstall daemon
+ * Uninstall daemon.
+ *
+ * For v1-style self-set locks: verify the user's password.
+ *
+ * For v2 Friend Lock: the user does NOT have the password. The gate is the
+ * friend's approval (delivered via the bot) or the 72h emergency cooldown.
+ * `uninstallGate` is the single source of truth — see packages/shared/src/delegation.ts.
  */
 async function handleDaemonUninstall(
   _event: Electron.IpcMainInvokeEvent,
   data: { password: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const { password } = data;
+  const schedule = loadSchedule();
 
-  // Verify password first
+  if (isDelegated(schedule)) {
+    const gate = uninstallGate(schedule);
+    if (!gate.allowed) {
+      return { ok: false, error: gate.reason };
+    }
+    // Approved or cooldown elapsed — proceed without password.
+    const result = await uninstallDaemon();
+    if (result.ok) {
+      // Clear the delegation so a future re-pair starts fresh.
+      schedule.delegation = null;
+      saveSchedule(schedule);
+    }
+    return result;
+  }
+
+  // Self-set lock path: password gate.
   const hash = loadPasswordHash();
   if (hash) {
     const valid = await verifyPassword(password, hash);

@@ -500,7 +500,7 @@ function subscribeFriendlockEvents() {
       ['a','b','c'].forEach(s => {
         const el = document.getElementById(`friendlock-state-${s}`);
         if (el && !el.classList.contains('hidden')) {
-          showFriendlockError(s, 'Bot unreachable. Check NIGHTOWL_BOT_URL or your internet, then try again.');
+          showFriendlockError(s, 'Bot unreachable. Check NIGHTOWL_BOT_URL is set to your deployed Worker URL (see RUNBOOK.md §8) or your internet, then try again.');
         }
       });
     })
@@ -515,6 +515,8 @@ function showLocked() {
   document.getElementById('edit-mode').classList.add('hidden');
   updateLockedUI();
   buildTimeline();
+  setupUninstallCard();
+  refreshUninstallCard();
 
   if (countdownInterval) clearInterval(countdownInterval);
   countdownInterval = setInterval(async () => {
@@ -525,6 +527,7 @@ function showLocked() {
       return;
     }
     updateLockedUI();
+    refreshUninstallCard();
   }, 1000);
 }
 
@@ -716,6 +719,170 @@ function showFocusActive(focus) {
       }, 3000);
     }
   }, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// FRIEND LOCK — uninstall card on the locked screen
+// ---------------------------------------------------------------------------
+let uninstallCardWired = false;
+
+function setupUninstallCard() {
+  if (uninstallCardWired) return;
+  uninstallCardWired = true;
+
+  document.getElementById('friendlock-ask-friend-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.requestUninstall();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not send the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (r.result === 'no_friend') {
+      errEl.textContent = 'Your friend has not paired yet — nothing to ask.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
+  document.getElementById('friendlock-emergency-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm(
+      'Start the 72-hour emergency cooldown?\n\nThis CANNOT be cancelled. After 72 hours, NightOwl will let you uninstall without your friend.\n\nUse this only if you genuinely need to escape the lock.'
+    );
+    if (!ok) return;
+    const r = await window.nightowl.friendlock.startEmergencyCooldown();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not start cooldown';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
+  document.getElementById('friendlock-uninstall-now-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm('Uninstall NightOwl daemon now? This ends the lock.');
+    if (!ok) return;
+    // password param ignored for delegated uninstall path
+    const r = await window.nightowl.uninstallDaemon({ password: '' });
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Uninstall failed';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    location.reload();
+  };
+
+  // Live updates from main when a decision arrives or cooldown ticks.
+  if (window.nightowl.friendlock.onUninstallDecision) {
+    window.nightowl.friendlock.onUninstallDecision(() => refreshUninstallCard());
+  }
+  if (window.nightowl.friendlock.onEmergencyCooldownChanged) {
+    window.nightowl.friendlock.onEmergencyCooldownChanged(() => refreshUninstallCard());
+  }
+}
+
+async function refreshUninstallCard() {
+  const card = document.getElementById('friendlock-uninstall-card');
+  if (!card) return;
+
+  // Show only when delegated. For self-set locks, the existing password-only
+  // uninstall path is fine and lives outside this card.
+  if (!schedule || !schedule.delegation) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  // Friend name in the button label.
+  const nameEl = document.getElementById('friendlock-ask-friend-name');
+  if (nameEl) nameEl.textContent = schedule.delegation.friendName || 'friend';
+
+  let gateStatus;
+  try {
+    gateStatus = await window.nightowl.friendlock.getUninstallGate();
+  } catch (e) {
+    return;
+  }
+
+  const stateEl = document.getElementById('friendlock-uninstall-state');
+  const askBtn = document.getElementById('friendlock-ask-friend-btn');
+  const emergBtn = document.getElementById('friendlock-emergency-btn');
+  const nowBtn = document.getElementById('friendlock-uninstall-now-btn');
+
+  // Reset classes + visibility
+  stateEl.className = 'uninstall-state';
+  askBtn.classList.remove('hidden');
+  emergBtn.classList.remove('hidden');
+  nowBtn.classList.add('hidden');
+
+  // Cooldown in flight?
+  if (gateStatus.emergencyCooldownStartedAt) {
+    const remainingMs = gateStatus.emergencyCooldownRemainingMs;
+    if (remainingMs > 0) {
+      stateEl.classList.add('cooldown');
+      stateEl.textContent = `Emergency cooldown in progress — ${formatHoursLeft(remainingMs)} remaining. NightOwl will allow uninstall when it elapses.`;
+      emergBtn.disabled = true;
+      emergBtn.textContent = 'Emergency cooldown in flight';
+    } else {
+      stateEl.classList.add('allowed');
+      stateEl.textContent = 'Emergency cooldown elapsed. You may uninstall now.';
+      emergBtn.classList.add('hidden');
+      askBtn.classList.add('hidden');
+      nowBtn.classList.remove('hidden');
+    }
+    return;
+  }
+
+  // Friend revoked?
+  if (schedule.delegation.phase === 'revoked') {
+    stateEl.classList.add('denied');
+    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} stepped away from this lock. They will not approve uninstall — start the 72h emergency cooldown to escape.`;
+    askBtn.classList.add('hidden');
+    return;
+  }
+
+  // Pending request?
+  if (gateStatus.pendingUninstallReqId && !gateStatus.lastDecisionVerdict) {
+    stateEl.textContent = `Waiting for ${schedule.delegation.friendName || 'your friend'} to /approve or /deny in Telegram.`;
+    askBtn.disabled = true;
+    askBtn.textContent = 'Request pending…';
+    return;
+  }
+
+  // Most recent decision was deny?
+  if (gateStatus.lastDecisionVerdict === 'denied') {
+    stateEl.classList.add('denied');
+    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} denied your last request. Try again or start the 72h emergency cooldown.`;
+    return;
+  }
+
+  // Approved?
+  if (gateStatus.gate.allowed) {
+    stateEl.classList.add('allowed');
+    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} approved your uninstall request. You may uninstall now.`;
+    askBtn.classList.add('hidden');
+    emergBtn.classList.add('hidden');
+    nowBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Default: nothing in flight.
+  stateEl.textContent = 'No request in flight. Click "Ask … to release" to send your friend an /approve|/deny prompt on Telegram.';
+}
+
+function formatHoursLeft(ms) {
+  if (ms <= 0) return '0h 0m';
+  const totalMin = Math.ceil(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h <= 0) return `${m}m`;
+  return `${h}h ${m}m`;
 }
 
 // ---------------------------------------------------------------------------

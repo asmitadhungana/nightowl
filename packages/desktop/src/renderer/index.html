@@ -145,6 +145,21 @@
         <h2>Weekly Timeline</h2>
         <div id="timeline"></div>
       </section>
+
+      <!-- Friend Lock — uninstall controls (visible only when delegated) -->
+      <section id="friendlock-uninstall-card" class="card hidden">
+        <h2>Need to uninstall?</h2>
+        <p id="friendlock-uninstall-explainer" class="muted">
+          You handed your password to a friend. To uninstall before the lock expires, ask them to approve — or start a 72-hour emergency cooldown that releases the lock without them.
+        </p>
+        <div id="friendlock-uninstall-state" class="uninstall-state"></div>
+        <div class="modal-buttons">
+          <button id="friendlock-ask-friend-btn" class="modal-btn confirm">Ask <span id="friendlock-ask-friend-name">friend</span> to release</button>
+          <button id="friendlock-emergency-btn" class="modal-btn cancel">Start 72h emergency cooldown</button>
+          <button id="friendlock-uninstall-now-btn" class="modal-btn confirm hidden">Uninstall now</button>
+        </div>
+        <div id="friendlock-uninstall-error" class="modal-error hidden"></div>
+      </section>
     </div>
   </div>
 
@@ -170,7 +185,7 @@
       <div id="friendlock-state-a" class="friendlock-state">
         <h2>🔒 Friend Lock</h2>
         <p>We'll generate an 8-character code. Have your friend open the NightOwl Telegram bot and send <code>/pair &lt;CODE&gt;</code>, then <code>/setpassword &lt;PW&gt;</code>.</p>
-        <p class="friendlock-warning">Once your friend sets the password, you can't undo this until the lock expires (or 72h emergency cooldown — Phase 2).</p>
+        <p class="friendlock-warning">Once your friend sets the password, you can't undo this until the lock expires, your friend approves uninstall, or you wait out the 72-hour emergency cooldown.</p>
         <div id="friendlock-error-a" class="modal-error hidden"></div>
         <div class="modal-buttons">
           <button id="friendlock-cancel-a" class="modal-btn cancel">Cancel</button>

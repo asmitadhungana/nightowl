@@ -20,6 +20,7 @@
  *     can't queue up behind itself.
  */
 
+import crypto from 'crypto';
 import { BrowserWindow } from 'electron';
 import {
   loadSchedule,
@@ -33,8 +34,12 @@ import {
   BOT_URL,
   isDelegated,
   makeDelegation,
+  uninstallGate,
+  emergencyCooldownRemainingMs,
+  canStartEmergencyUninstall,
   type DelegationState,
   type DelegationPhase,
+  type UninstallGate,
 } from '@nightowl/shared';
 
 interface EnrollResponseBody {
@@ -45,7 +50,7 @@ interface EnrollResponseBody {
 
 interface PollMessage {
   seq: number;
-  kind: 'pair_complete' | 'password_hash';
+  kind: 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision';
   payload: unknown;
   sig: string;
 }
@@ -65,6 +70,28 @@ interface PairCompletePayload {
 interface PasswordHashPayload {
   hash: string;
   passwordSetAt: string;
+}
+
+interface FriendRevokedPayload {
+  revokedAt: string;
+}
+
+interface UninstallDecisionPayload {
+  reqId: string;
+  verdict: 'approved' | 'denied';
+  decidedAt: string;
+}
+
+/**
+ * Tracks the most recent uninstall decision per delegation. Persisted to the
+ * delegation as an ad-hoc field so a restart doesn't lose the verdict the user
+ * was about to act on. Stored separately from `pendingUninstallReqId` because
+ * we want history (approved-then-user-canceled) without losing the prior state.
+ */
+export interface UninstallDecisionRecord {
+  reqId: string;
+  verdict: 'approved' | 'denied';
+  decidedAt: string;
 }
 
 const POLL_FAST_MS = 10_000;
@@ -316,6 +343,12 @@ async function handleInboxMessage(msg: PollMessage): Promise<void> {
     case 'password_hash':
       await dispatchPasswordHash(schedule.delegation, msg.payload as PasswordHashPayload, msg.seq);
       break;
+    case 'friend_revoked':
+      await dispatchFriendRevoked(schedule.delegation, msg.payload as FriendRevokedPayload, msg.seq);
+      break;
+    case 'uninstall_decision':
+      await dispatchUninstallDecision(schedule.delegation, msg.payload as UninstallDecisionPayload, msg.seq);
+      break;
     default:
       console.warn('[friendlock] unknown message kind, dropping');
       // Bump consumed seq anyway so we don't refetch it forever.
@@ -389,12 +422,167 @@ async function dispatchPasswordHash(
   void delegation;
 }
 
+async function dispatchFriendRevoked(
+  delegation: DelegationState,
+  payload: FriendRevokedPayload,
+  seq: number
+): Promise<void> {
+  const schedule = loadSchedule();
+  if (!schedule.delegation) return;
+  // Move into the 'revoked' phase. Lock continues to lockEndDate; the UI will
+  // surface the 72h emergency cooldown more prominently.
+  schedule.delegation.phase = 'revoked';
+  schedule.delegation.friendRevokedAt = payload.revokedAt ?? new Date().toISOString();
+  schedule.delegation.lastConsumedSeq = seq;
+  saveSchedule(schedule);
+  emitPhaseChanged('revoked');
+  void delegation;
+}
+
+async function dispatchUninstallDecision(
+  delegation: DelegationState,
+  payload: UninstallDecisionPayload,
+  seq: number
+): Promise<void> {
+  const schedule = loadSchedule();
+  if (!schedule.delegation) return;
+
+  if (!payload.reqId || (payload.verdict !== 'approved' && payload.verdict !== 'denied')) {
+    console.warn('[friendlock] uninstall_decision malformed; dropping');
+    bumpConsumedSeq(seq);
+    return;
+  }
+  if (schedule.delegation.pendingUninstallReqId !== payload.reqId) {
+    // Out-of-band decision (e.g. user already cancelled, or this is from an old
+    // request we no longer care about). Still record it — auditability — but
+    // don't promote to "current."
+    console.warn('[friendlock] uninstall_decision for a non-pending reqId; recording but not acting');
+    schedule.delegation.lastConsumedSeq = seq;
+    saveSchedule(schedule);
+    bumpConsumedSeq(seq);
+    return;
+  }
+
+  schedule.delegation.lastUninstallDecision = {
+    reqId: payload.reqId,
+    verdict: payload.verdict,
+    decidedAt: payload.decidedAt ?? new Date().toISOString(),
+  };
+  schedule.delegation.pendingUninstallReqId = null;
+  schedule.delegation.lastConsumedSeq = seq;
+  saveSchedule(schedule);
+
+  emitUninstallDecision(payload.verdict, payload.reqId);
+  void delegation;
+}
+
 function bumpConsumedSeq(seq: number): void {
   const schedule = loadSchedule();
   if (!schedule.delegation) return;
   if (seq <= schedule.delegation.lastConsumedSeq) return;
   schedule.delegation.lastConsumedSeq = seq;
   saveSchedule(schedule);
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall request flow
+//
+// Desktop-initiated: user clicks "Ask {friend} to release" → mint reqId →
+// POST /desktop/request-uninstall → bot DMs the friend with /approve|/deny.
+// Decision arrives back as a signed `uninstall_decision` inbox message.
+// ---------------------------------------------------------------------------
+
+export interface RequestUninstallResult {
+  ok: boolean;
+  reqId?: string;
+  /** Mirror of the bot's response: 'queued' | 'no_friend' | 'duplicate'. */
+  result?: 'queued' | 'no_friend' | 'duplicate';
+  error?: string;
+}
+
+export async function requestUninstall(): Promise<RequestUninstallResult> {
+  const schedule = loadSchedule();
+  if (!schedule.delegation) return { ok: false, error: 'No friend lock active' };
+  if (schedule.delegation.phase !== 'active' && schedule.delegation.phase !== 'revoked') {
+    return { ok: false, error: 'Lock is not active yet — cancel pairing instead of asking the friend' };
+  }
+  if (schedule.delegation.pendingUninstallReqId) {
+    return { ok: false, error: 'A request is already pending. Wait for the friend to /approve or /deny.' };
+  }
+  if (schedule.delegation.phase === 'revoked') {
+    return { ok: false, error: 'Friend has revoked their role — they will not respond. Use the 72h emergency cooldown.' };
+  }
+
+  const reqId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const identity = ensureIdentity();
+  const ts = Date.now();
+  const preimage = `request_uninstall|${schedule.delegation.pairingId}|${reqId}|${ts}`;
+  const sig = signPayload(identity.privateKey, preimage);
+
+  let body: { reqId: string; result: 'queued' | 'no_friend' | 'duplicate' };
+  try {
+    const r = await fetchJson(`${BOT_URL}/desktop/request-uninstall`, {
+      pairingId: schedule.delegation.pairingId,
+      reqId,
+      createdAt,
+      ts,
+      sig,
+    });
+    body = r as { reqId: string; result: 'queued' | 'no_friend' | 'duplicate' };
+  } catch (e) {
+    return { ok: false, error: `Bot unreachable: ${(e as Error).message}` };
+  }
+
+  if (body.result === 'queued' || body.result === 'duplicate') {
+    schedule.delegation.pendingUninstallReqId = reqId;
+    saveSchedule(schedule);
+    // Tighten polling to fast cadence so we catch the decision asap.
+    schedulePollSoon();
+  }
+
+  return { ok: true, reqId, result: body.result };
+}
+
+/**
+ * Start the 72h emergency uninstall cooldown. Once started this CANNOT be
+ * cancelled — the cooldown is the safety net for friend-vanishes / hostile-friend
+ * scenarios, and an "oops, never mind" button would defang it.
+ */
+export function startEmergencyCooldown(): { ok: boolean; startedAt?: string; error?: string } {
+  const schedule = loadSchedule();
+  if (!schedule.delegation) return { ok: false, error: 'No friend lock active' };
+  if (!canStartEmergencyUninstall(schedule)) {
+    return { ok: false, error: 'Emergency cooldown is already in flight' };
+  }
+  schedule.delegation.emergencyUninstallStartedAt = new Date().toISOString();
+  saveSchedule(schedule);
+  emitEmergencyCooldownChanged();
+  return { ok: true, startedAt: schedule.delegation.emergencyUninstallStartedAt };
+}
+
+/**
+ * Snapshot of "can the user uninstall right now?" — sent to the renderer so
+ * the locked-screen can render the right buttons. Cheap; safe to call on every
+ * UI tick.
+ */
+export interface UninstallGateStatus {
+  gate: UninstallGate;
+  pendingUninstallReqId: string | null;
+  lastDecisionVerdict: 'approved' | 'denied' | null;
+  emergencyCooldownStartedAt: string | null;
+  emergencyCooldownRemainingMs: number;
+}
+
+export function getUninstallGateStatus(): UninstallGateStatus {
+  const schedule = loadSchedule();
+  return {
+    gate: uninstallGate(schedule),
+    pendingUninstallReqId: schedule.delegation?.pendingUninstallReqId ?? null,
+    lastDecisionVerdict: schedule.delegation?.lastUninstallDecision?.verdict ?? null,
+    emergencyCooldownStartedAt: schedule.delegation?.emergencyUninstallStartedAt ?? null,
+    emergencyCooldownRemainingMs: emergencyCooldownRemainingMs(schedule),
+  };
 }
 
 /** Mirror of bot/src/crypto.ts botMessagePreimage. Same canonical-JSON rules. */
@@ -450,5 +638,17 @@ function emitFriendPaired(friendName: string): void {
 function emitBotUnreachable(sinceMs: number): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('friendlock:botUnreachable', { since: sinceMs });
+  }
+}
+
+function emitUninstallDecision(verdict: 'approved' | 'denied', reqId: string): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('friendlock:uninstallDecision', { verdict, reqId });
+  }
+}
+
+function emitEmergencyCooldownChanged(): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('friendlock:emergencyCooldownChanged');
   }
 }

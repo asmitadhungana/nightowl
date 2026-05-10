@@ -43,15 +43,25 @@ export interface DelegationState {
   /** Current lifecycle phase. */
   phase: DelegationPhase;
   /**
-   * Phase-2 only: id of the in-flight uninstall request awaiting friend approval.
-   * Null in alpha and whenever no request is pending.
+   * UUIDv4 of the in-flight uninstall request awaiting friend approval.
+   * Null whenever no request is pending or the most recent one is decided.
    */
   pendingUninstallReqId: string | null;
   /**
-   * Phase-2 only: ISO timestamp when the user started the 72h emergency
-   * uninstall cooldown. Null if cooldown is not active.
+   * ISO timestamp when the user started the 72h emergency uninstall cooldown.
+   * Null if cooldown is not active. Once started it cannot be cancelled — that
+   * keeps the safety net from being defanged by a hostile-friend scenario.
    */
   emergencyUninstallStartedAt: string | null;
+  /**
+   * Most recent uninstall decision the friend has issued. Cached on the desktop
+   * so the user can act on it immediately and so a restart doesn't lose the
+   * verdict between bot-poll and user-click. Cleared by the desktop after the
+   * uninstall actually fires (or after the user chooses to cancel).
+   */
+  lastUninstallDecision: { reqId: string; verdict: 'approved' | 'denied'; decidedAt: string } | null;
+  /** ISO timestamp when the friend issued /revoke. Null when phase != 'revoked'. */
+  friendRevokedAt: string | null;
 }
 
 /** 72 hours in milliseconds. Override to a small value in tests. */
@@ -68,6 +78,8 @@ export function makeDelegation(pairingId: string): DelegationState {
     phase: 'enrolled',
     pendingUninstallReqId: null,
     emergencyUninstallStartedAt: null,
+    lastUninstallDecision: null,
+    friendRevokedAt: null,
   };
 }
 
@@ -108,4 +120,64 @@ export function emergencyCooldownRemainingMs(s: Schedule, nowMs: number = Date.n
 export function canStartEmergencyUninstall(s: Schedule): boolean {
   if (!isDelegated(s)) return false;
   return s.delegation?.emergencyUninstallStartedAt == null;
+}
+
+/**
+ * Result type for `uninstallGate` — the single source of truth for "may the
+ * user uninstall NightOwl right now?" used by daemon:uninstall and the UI.
+ *
+ * `reason` is the user-facing string — keep it actionable.
+ */
+export type UninstallGate =
+  | { allowed: true; reason: string }
+  | { allowed: false; reason: string };
+
+/**
+ * Decide whether daemon:uninstall is allowed given current state.
+ *
+ * Self-set lock (no delegation): allowed if the user supplies the right password.
+ *   The caller (api.ts) checks the password; this function returns allowed=true
+ *   for the non-delegated case so the password check is the only gate.
+ *
+ * Delegated, lock not active yet (enrolled/paired/awaiting_password): allowed —
+ *   nothing is locking anything yet, and the user can cancel pairing then uninstall.
+ *
+ * Delegated, lock active: allowed only if the friend approved (latest decision is
+ *   'approved') OR the 72h emergency cooldown has elapsed.
+ *
+ * Delegated, friend revoked: same as active — friend won't approve so the only
+ *   path is the emergency cooldown elapsing.
+ *
+ * `nowMs` injectable for tests.
+ */
+export function uninstallGate(s: Schedule, nowMs: number = Date.now()): UninstallGate {
+  if (!isDelegated(s) || !s.delegation) {
+    return { allowed: true, reason: 'self-set lock — password check applies' };
+  }
+  // Pre-active phases: nothing is enforcing yet.
+  if (s.delegation.phase !== 'active' && s.delegation.phase !== 'revoked') {
+    return { allowed: true, reason: 'pairing in flight — cancel pairing instead of uninstalling' };
+  }
+  const last = s.delegation.lastUninstallDecision;
+  if (last && last.verdict === 'approved') {
+    return { allowed: true, reason: `friend approved at ${last.decidedAt}` };
+  }
+  if (s.delegation.emergencyUninstallStartedAt) {
+    const remaining = emergencyCooldownRemainingMs(s, nowMs);
+    if (remaining <= 0) {
+      return { allowed: true, reason: '72h emergency cooldown elapsed' };
+    }
+    const hoursLeft = Math.ceil(remaining / 1000 / 60 / 60);
+    return { allowed: false, reason: `Emergency cooldown in progress — ${hoursLeft}h remaining. NightOwl will allow uninstall when it elapses.` };
+  }
+  if (last && last.verdict === 'denied') {
+    return { allowed: false, reason: `Friend denied your last request. Send a new request, or start the 72h emergency cooldown.` };
+  }
+  if (s.delegation.pendingUninstallReqId) {
+    return { allowed: false, reason: `Waiting on your friend to /approve or /deny in Telegram. You can also start the 72h emergency cooldown to escape without them.` };
+  }
+  if (s.delegation.phase === 'revoked') {
+    return { allowed: false, reason: `Your friend stepped away from this lock. Start the 72h emergency cooldown to uninstall.` };
+  }
+  return { allowed: false, reason: `Friend Lock is active. Ask your friend to approve uninstall, or start the 72h emergency cooldown.` };
 }

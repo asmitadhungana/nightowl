@@ -33,15 +33,21 @@ Copy both `id` values into `wrangler.toml` (`id` and `preview_id`).
 
 ### 2. Set secrets
 
+> **Read this first:** `wrangler secret put` takes the secret value from STDIN.
+> Do NOT pass the value on the command line — wrangler rejects it (`Unknown
+> argument: ...`) AND logs the full argv on error to
+> `~/Library/Preferences/.wrangler/logs/wrangler-*.log`. If you accidentally
+> leak a token this way, revoke it (BotFather: `/revoke`), delete the log
+> file, and clear shell history.
+
 ```bash
-wrangler secret put TG_BOT_TOKEN
-# paste the @BotFather token
+# Interactive — paste the value at the "? Enter a secret value:" prompt.
+wrangler secret put TG_BOT_TOKEN          # @BotFather token
+wrangler secret put TG_WEBHOOK_SECRET     # output of: openssl rand -hex 32
+wrangler secret put BOT_ED25519_PRIVKEY   # contents of packages/bot/secrets/bot-private-key.hex (64 hex chars)
 
-wrangler secret put TG_WEBHOOK_SECRET
-# paste a random 32-byte hex string from `openssl rand -hex 32`
-
-wrangler secret put BOT_ED25519_PRIVKEY
-# paste the contents of packages/bot/secrets/bot-private-key.hex (64 hex chars)
+# Or, pipe from a file you immediately remove:
+echo -n "<value>" > /tmp/s && wrangler secret put NAME < /tmp/s && rm /tmp/s
 ```
 
 ### 3. Deploy

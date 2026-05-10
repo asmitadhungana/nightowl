@@ -10,6 +10,7 @@ import { setupIpcHandlers } from './api.js';
 import { createTray, updateTrayMenu } from './tray.js';
 import { setupAutoLaunch } from './autolaunch.js';
 import { startFriendlockPolling, stopFriendlockPolling } from './friendlock.js';
+import { BOT_URL } from '@nightowl/shared';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -120,6 +121,11 @@ app.whenReady().then(async () => {
 
   // Start polling the bot for delegated-lock messages.
   // Idempotent — schedules a no-op tick if there's no active delegation.
+  // In a packaged build, BOT_URL pointing at localhost almost certainly means the
+  // operator forgot to set NIGHTOWL_BOT_URL — log loudly so it's debuggable.
+  if (app.isPackaged && /^https?:\/\/(localhost|127\.|0\.0\.0\.0)/i.test(BOT_URL)) {
+    console.warn(`[friendlock] BOT_URL is "${BOT_URL}" in a packaged build. Friend Lock will not reach the deployed Worker. Set NIGHTOWL_BOT_URL before launch (see RUNBOOK.md §8).`);
+  }
   startFriendlockPolling();
 
   // macOS specific - create window on activation if none exist

@@ -5,6 +5,7 @@
  *   POST /tg/webhook/<TG_WEBHOOK_SECRET>   ← Telegram updates
  *   POST /desktop/enroll                   ← desktop registers pubkey, gets pair code
  *   POST /desktop/poll                     ← desktop pulls inbox messages
+ *   POST /desktop/request-uninstall        ← desktop asks bot to DM friend for /approve|/deny
  *   GET  /healthz                          ← liveness probe
  */
 
@@ -12,6 +13,7 @@ import type { Env } from './env.js';
 import { handleTelegramWebhook } from './routes/tg-webhook.js';
 import { handleEnroll } from './routes/enroll.js';
 import { handlePoll } from './routes/poll.js';
+import { handleRequestUninstall } from './routes/request-uninstall.js';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -36,6 +38,10 @@ export default {
 
     if (method === 'POST' && path === '/desktop/poll') {
       return handlePoll(req, env);
+    }
+
+    if (method === 'POST' && path === '/desktop/request-uninstall') {
+      return handleRequestUninstall(req, env);
     }
 
     return new Response('not found', { status: 404 });

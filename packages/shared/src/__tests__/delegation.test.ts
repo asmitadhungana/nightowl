@@ -4,6 +4,7 @@ import {
   isInEmergencyCooldown,
   emergencyCooldownRemainingMs,
   canStartEmergencyUninstall,
+  uninstallGate,
   EMERGENCY_COOLDOWN_MS,
 } from '../delegation.js';
 import type { DelegationState } from '../delegation.js';
@@ -107,5 +108,96 @@ describe('canStartEmergencyUninstall', () => {
   it('returns false when delegated and cooldown is already in flight', () => {
     const d = { ...makeDelegation('p1'), emergencyUninstallStartedAt: new Date().toISOString() };
     expect(canStartEmergencyUninstall(scheduleWith(d))).toBe(false);
+  });
+});
+
+describe('uninstallGate', () => {
+  const now = Date.UTC(2026, 4, 10, 12, 0, 0);
+
+  it('allows uninstall on a self-set lock (no delegation)', () => {
+    const r = uninstallGate(scheduleWith(null), now);
+    expect(r.allowed).toBe(true);
+  });
+
+  it('allows uninstall during pre-active pairing phases (cancel pairing instead)', () => {
+    const phases = ['enrolled', 'paired', 'awaiting_password'] as const;
+    for (const phase of phases) {
+      const d = { ...makeDelegation('p1'), phase };
+      const r = uninstallGate(scheduleWith(d), now);
+      expect(r.allowed).toBe(true);
+    }
+  });
+
+  it('blocks uninstall when active and friend has not approved', () => {
+    const d = { ...makeDelegation('p1'), phase: 'active' as const };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(false);
+  });
+
+  it('blocks uninstall when a request is pending and no decision yet', () => {
+    const d = {
+      ...makeDelegation('p1'),
+      phase: 'active' as const,
+      pendingUninstallReqId: 'req-uuid-1',
+    };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/Waiting on your friend/);
+  });
+
+  it('allows uninstall after friend approves', () => {
+    const d = {
+      ...makeDelegation('p1'),
+      phase: 'active' as const,
+      lastUninstallDecision: { reqId: 'req-uuid-1', verdict: 'approved' as const, decidedAt: '2026-05-10T11:00:00.000Z' },
+    };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(true);
+    expect(r.reason).toMatch(/friend approved/);
+  });
+
+  it('blocks uninstall when friend denied (and no cooldown)', () => {
+    const d = {
+      ...makeDelegation('p1'),
+      phase: 'active' as const,
+      lastUninstallDecision: { reqId: 'req-uuid-1', verdict: 'denied' as const, decidedAt: '2026-05-10T11:00:00.000Z' },
+    };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/Friend denied/);
+  });
+
+  it('blocks uninstall when friend revoked (no cooldown started)', () => {
+    const d = { ...makeDelegation('p1'), phase: 'revoked' as const, friendRevokedAt: '2026-05-10T11:00:00.000Z' };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/stepped away/);
+  });
+
+  it('blocks uninstall while emergency cooldown is in flight (with hours remaining)', () => {
+    const startedAt = new Date(now - 1000 * 60 * 60).toISOString(); // 1h ago
+    const d = { ...makeDelegation('p1'), phase: 'active' as const, emergencyUninstallStartedAt: startedAt };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/cooldown in progress/i);
+  });
+
+  it('allows uninstall once emergency cooldown elapses', () => {
+    const startedAt = new Date(now - EMERGENCY_COOLDOWN_MS - 1000).toISOString();
+    const d = { ...makeDelegation('p1'), phase: 'active' as const, emergencyUninstallStartedAt: startedAt };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(true);
+    expect(r.reason).toMatch(/72h emergency cooldown elapsed/);
+  });
+
+  it('approval beats a pending request id (decision wins)', () => {
+    const d = {
+      ...makeDelegation('p1'),
+      phase: 'active' as const,
+      pendingUninstallReqId: 'req-uuid-1',
+      lastUninstallDecision: { reqId: 'req-uuid-1', verdict: 'approved' as const, decidedAt: '2026-05-10T11:00:00.000Z' },
+    };
+    const r = uninstallGate(scheduleWith(d), now);
+    expect(r.allowed).toBe(true);
   });
 });

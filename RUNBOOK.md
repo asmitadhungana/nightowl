@@ -181,3 +181,62 @@ After this, the daemon WILL run `halt -q` when curfew fires. There is no inline 
 - **Code signing / notarization** — Electron app is not signed. Distribution to other users would hit Gatekeeper warnings.
 - **Daemon binary bundling** — daemon ships as a Node script + node_modules, not a single executable. Production distribution would want esbuild or `@yao-pkg/pkg` for a single-binary install.
 - **Windows** — code paths exist but untested in this pass; macOS only.
+
+## 8. v2 Friend Lock — first-time bot bring-up (alpha)
+
+The Cloudflare Worker for Friend Lock is deployed (3 deployments visible via `npx wrangler deployments list` from `packages/bot/`) but **`TG_BOT_TOKEN` is not yet set as a secret**. Without it the bot can receive Telegram updates but cannot reply or `deleteMessage`. This is the only manual step blocking an end-to-end pairing test.
+
+```bash
+cd packages/bot
+
+# 1. Confirm what's set today (you should see exactly TG_WEBHOOK_SECRET + BOT_ED25519_PRIVKEY)
+npx wrangler secret list
+
+# 2. Get a bot token from @BotFather on Telegram (one-time)
+#    Send @BotFather: /newbot  → pick a name → pick a username → save the token
+
+# 3. Set it as a Worker secret.
+#
+#    IMPORTANT: `wrangler secret put` reads the value from STDIN, NOT from argv.
+#    Putting the token on the same command line will fail with
+#       ✘ [ERROR] Unknown argument: <token>
+#    and (worse) wrangler logs the full argv on error to
+#    ~/Library/Preferences/.wrangler/logs/wrangler-*.log — meaning your token
+#    just landed in a file. If you do this by accident: revoke the token via
+#    @BotFather (/revoke), delete the offending log file, and clear shell history.
+#
+#    Correct forms:
+npx wrangler secret put TG_BOT_TOKEN
+# wrangler prints "? Enter a secret value:" — paste the token there, hit Enter.
+
+# Or, pipe from a file you delete right after (avoids shell history capture):
+echo -n "<your-bot-token>" > /tmp/tgtok && \
+  npx wrangler secret put TG_BOT_TOKEN < /tmp/tgtok && \
+  rm /tmp/tgtok
+
+# 4. Confirm the deployed URL
+npx wrangler deployments status
+# look for the workers.dev URL in the output (or check the Cloudflare dashboard)
+
+# 5. Point Telegram at it (replace <TOKEN>, <WORKER_URL>, <SECRET>).
+#    Use the SAME TG_WEBHOOK_SECRET value you set earlier — wrangler doesn't
+#    surface it back. If you've forgotten it, rotate: `wrangler secret put
+#    TG_WEBHOOK_SECRET < /tmp/sec` with a fresh `openssl rand -hex 32`, then
+#    re-run the setWebhook below with the new value.
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<WORKER_URL>/tg/webhook/<SECRET>"
+# expect: {"ok":true,"result":true,"description":"Webhook was set"}
+
+# 6. Smoke-test from the Telegram client: DM the bot /help. You should get HELP_MESSAGE back.
+#    If nothing comes back, `npx wrangler tail` from packages/bot/ to see live
+#    request logs from the Worker.
+```
+
+Once the bot replies to `/help`, the desktop side can be brought up:
+
+```bash
+NIGHTOWL_BOT_URL=https://<WORKER_URL> npm run dev:desktop
+```
+
+In the renderer: switch the lock-mode toggle to **Friend**, click **Generate Pair Code**, hand the 8-char code to a friend (or yourself in a second Telegram account), have them DM the bot `/pair <CODE>` then `/setpassword <PW>`. Within ~10 seconds the desktop should transition `enrolled → paired → awaiting_password → active` and the lock activates.
+
+If the desktop logs `bot unreachable`: check `NIGHTOWL_BOT_URL` is set, `npx wrangler tail` from `packages/bot/` for live logs, and verify `/healthz` returns `ok` (`curl https://<WORKER_URL>/healthz`).

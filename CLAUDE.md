@@ -148,7 +148,7 @@ bash nightowl.sh test
 - **Requires root for daemon** — enforcement must run as root to prevent user bypass
 - **Node.js required** — for web server
 - **Python3 required** — used by daemon for timezone-aware time calculations
-- **No external services** — everything runs locally
+- **No external services for v1** — everything runs locally. **Narrowly relaxed in v2** for Friend Lock (Telegram bot + Cloudflare Worker, see the v2 section below). Anything beyond friend-mediated password delivery should still default to local.
 - **The whole point is to be hard to bypass** — don't add easy escape hatches
 
 ## Default Schedule
@@ -159,3 +159,59 @@ bash nightowl.sh test
   "timezone": "Asia/Kathmandu"
 }
 ```
+
+---
+
+## v2 — Friend Lock (alpha, branch `feat/v2-friend-lock-alpha`)
+
+NightOwl v2's headline is **Friend Lock**: a friend sets the lock password via a Telegram bot, so the primary user literally doesn't have the key to their own machine. Asymmetric by design — primary user picks the schedule, lock duration, and friend; friend only holds the password and gates uninstall.
+
+```
+packages/
+├── shared/      # @nightowl/shared — types + Ed25519 identity + delegation lifecycle predicates
+├── bot/         # @nightowl/bot — Cloudflare Worker; Telegram webhook + /desktop/* endpoints
+├── desktop/     # @nightowl/desktop — Electron main + renderer; main/friendlock.ts is the orchestrator
+└── daemon/      # legacy v1 daemon (untouched in v2)
+```
+
+### Load-bearing invariants
+
+If a future request would relax any of these, push back. These are the rules that make Friend Lock meaningfully hard to bypass.
+
+- **Plaintext password** lives only in the friend's Telegram client and the Worker isolate (where it is bcrypted before any KV write or log). The desktop only ever sees the bcrypt hash.
+- **Every bot↔desktop message is Ed25519-signed.** Bot pubkey (`BOT_PUBKEY_HEX`) is baked into the desktop build; a compromised Worker can drop messages but cannot forge them. Replay defense: per-pairing `lastConsumedSeq`.
+- **Friend powers are scoped:** set initial password, /approve|/deny uninstall, /revoke. Friend canNOT extend lock duration, modify the schedule, change the password mid-lock, or be swapped for a more compliant friend mid-lock.
+- **72h emergency uninstall cooldown is the safety net AND is non-cancellable** once started. Cancellable would defang it under social pressure (hostile-friend scenario).
+- **`uninstallGate(schedule)` in `packages/shared/src/delegation.ts` is the single source of truth** for "may the user uninstall right now?" Both the desktop API gate and the renderer UI consume it. Don't duplicate the branching elsewhere.
+
+### Per-milestone history → `changes/`
+
+Each milestone has a file in `changes/M<NN>-*.md` covering file-by-file changes, deferred work, and any operational gotchas. M1–M5 are also one git commit each; M6 onward lives entirely in `changes/`.
+
+- **M1–M4** — shared foundation, Worker bot, desktop orchestrator, renderer pairing wizard (commits `ee27cbf` → `aedef53`)
+- **M5** — first Worker deploy (Cloudflare upload, no commit)
+- **M6** — uninstall request flow + 72h cooldown + `/revoke` `/approve` `/deny` + delegated `daemon:uninstall` gating
+
+For first-time bot bring-up, see `RUNBOOK.md §8`.
+
+### Paths intentionally NOT taken
+
+Refused options with reasons. If a future request asks for one of these, surface the reason rather than silently agreeing.
+
+- **M-of-N friends** — v3 candidate; adds a key-management story v2 doesn't need.
+- **In-app peer-to-peer (no Telegram)** — v3 candidate; needs NAT traversal + companion app + push.
+- **Friend can extend lock / modify schedule / re-set password mid-lock** — caps hostage risk if the friend turns hostile.
+- **Letting the user re-pair while a lock is active** — would let the user race the friend by swapping in a more compliant friend.
+- **Rolling delegation that auto-renews** — re-pair to renew; auto-renew blurs the "user proposes, friend ratifies" line.
+- **Telegram username as friend identifier** — handles change; we use the immutable `chat_id`.
+- **Forwarding the friend's password to the desktop in cleartext** — defeats Friend Lock entirely.
+- **Cancellable emergency cooldown** — defangs the safety net under social pressure.
+- **Auto-uninstall when the cooldown elapses** — cooldown enables uninstall; user still has to click. Surprise auto-uninstall would lose work.
+
+### Open work
+
+- Set `TG_BOT_TOKEN` Worker secret and run the first real-Telegram E2E (see `RUNBOOK.md §8`).
+- Bot integration tests — `packages/bot` currently has only a placeholder test script.
+- Bake a hosted Worker URL into `BOT_URL` once the self-hosting story is settled (M6 added a packaged-build startup warning as a soft alternative).
+- Self-healing daemon (carried over from v1 — see "Critical #5" above; not blocking v2).
+

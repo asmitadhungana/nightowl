@@ -37,18 +37,29 @@ async function tgCall(token: string, method: string, body: unknown): Promise<unk
   return r.json();
 }
 
+export interface SendMessageResult {
+  ok: boolean;
+  result?: { message_id: number };
+}
+
 export async function sendMessage(
   token: string,
   chatId: number | string,
   text: string,
   opts?: { parse_mode?: 'Markdown' | 'HTML'; reply_to_message_id?: number }
-): Promise<void> {
-  await tgCall(token, 'sendMessage', {
-    chat_id: chatId,
-    text,
-    parse_mode: opts?.parse_mode,
-    reply_to_message_id: opts?.reply_to_message_id,
-  });
+): Promise<SendMessageResult | null> {
+  try {
+    return (await tgCall(token, 'sendMessage', {
+      chat_id: chatId,
+      text,
+      parse_mode: opts?.parse_mode,
+      reply_to_message_id: opts?.reply_to_message_id,
+    })) as SendMessageResult;
+  } catch {
+    // Caller never expected this to throw before; preserve that. Return null
+    // so anyone wanting message_id can detect the failure without try/catch.
+    return null;
+  }
 }
 
 export async function deleteMessage(token: string, chatId: number | string, messageId: number): Promise<void> {

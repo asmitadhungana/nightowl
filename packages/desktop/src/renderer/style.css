@@ -441,3 +441,33 @@ h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
   margin-top: 10px;
   letter-spacing: 0.3px;
 }
+
+/* Friend-Lock uninstall card on the locked screen */
+.muted {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.uninstall-state {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.uninstall-state.allowed {
+  border-color: rgba(0, 212, 255, 0.4);
+  color: var(--accent);
+}
+.uninstall-state.cooldown {
+  border-color: rgba(255, 200, 100, 0.4);
+  color: rgb(255, 200, 100);
+}
+.uninstall-state.denied {
+  border-color: rgba(255, 100, 100, 0.4);
+  color: rgb(255, 140, 140);
+}

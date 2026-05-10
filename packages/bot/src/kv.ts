@@ -2,19 +2,22 @@
  * KV access layer. All keys namespaced; values are JSON.
  *
  * Keys:
- *   pair:<pairingId>     Pairing — primary record
- *   pcode:<code>         { pairingId } — KV TTL = 5 min
- *   inbox:<pairingId>    InboxMessage[] — capped, FIFO
+ *   pair:<pairingId>          Pairing — primary record
+ *   pcode:<code>              { pairingId } — KV TTL = 5 min
+ *   inbox:<pairingId>         InboxMessage[] — capped, FIFO
+ *   ureq:<reqId>              UninstallRequest — TTL 7 days (longer than any practical lock)
  */
 
 import type { Env } from './env.js';
-import type { InboxMessage, PairCodeRecord, Pairing } from './types.js';
+import type { InboxMessage, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
 
 const PAIR_PREFIX = 'pair:';
 const PCODE_PREFIX = 'pcode:';
 const INBOX_PREFIX = 'inbox:';
+const UREQ_PREFIX = 'ureq:';
 
 const PAIR_CODE_TTL_SECONDS = 5 * 60;
+const UREQ_TTL_SECONDS = 7 * 24 * 60 * 60;
 const INBOX_CAP = 50;
 
 export async function getPairing(env: Env, pairingId: string): Promise<Pairing | null> {
@@ -64,6 +67,17 @@ export async function appendInbox(env: Env, pairingId: string, msg: InboxMessage
 /** Filter inbox to messages with seq > lastSeq, in seq order. */
 export function pendingMessages(inbox: InboxMessage[], lastSeq: number): InboxMessage[] {
   return inbox.filter((m) => m.seq > lastSeq).sort((a, b) => a.seq - b.seq);
+}
+
+export async function getUninstallRequest(env: Env, reqId: string): Promise<UninstallRequest | null> {
+  const raw = await env.NIGHTOWL_KV.get(UREQ_PREFIX + reqId);
+  return raw ? (JSON.parse(raw) as UninstallRequest) : null;
+}
+
+export async function putUninstallRequest(env: Env, req: UninstallRequest): Promise<void> {
+  await env.NIGHTOWL_KV.put(UREQ_PREFIX + req.reqId, JSON.stringify(req), {
+    expirationTtl: UREQ_TTL_SECONDS,
+  });
 }
 
 export const PAIR_CODE_TTL_MS = PAIR_CODE_TTL_SECONDS * 1000;
