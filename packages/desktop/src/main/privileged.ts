@@ -18,6 +18,13 @@ const MACOS_PLIST_PATH = `/Library/LaunchDaemons/${MACOS_PLIST_NAME}`;
 // but uninstall removes this for users upgrading from the old layout.
 const MACOS_LEGACY_DAEMON_PATH = '/usr/local/bin/nightowld.js';
 
+// Windows Task Scheduler — see createWindowsTaskXml() for the rationale.
+// The task is created under the root namespace (\NightOwlDaemon) so the
+// short name suffices in subsequent schtasks calls.
+const WINDOWS_TASK_NAME = 'NightOwlDaemon';
+const WINDOWS_INSTALL_DIR = path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'NightOwl');
+const WINDOWS_DAEMON_EXE = path.join(WINDOWS_INSTALL_DIR, 'nightowld.exe');
+
 function resolveNodePath(): string {
   if (process.env.NIGHTOWL_NODE_BIN) return process.env.NIGHTOWL_NODE_BIN;
   try {
@@ -100,7 +107,16 @@ async function getMacosDaemonStatus(): Promise<{
 }
 
 /**
- * Get Windows daemon status
+ * Get Windows daemon status.
+ *
+ * We use a Scheduled Task (not a Windows Service) so the daemon runs in the
+ * user's session and toast notifications actually reach the desktop — services
+ * are stuck in Session 0 and their UI never appears. See createWindowsTaskXml().
+ *
+ * `schtasks /Query /FO LIST` prints lines like:
+ *   TaskName:    \NightOwlDaemon
+ *   Status:      Running     | Ready | Disabled | Could not start
+ * We match "Running" to mean the daemon process is alive right now.
  */
 async function getWindowsDaemonStatus(): Promise<{
   installed: boolean;
@@ -111,10 +127,13 @@ async function getWindowsDaemonStatus(): Promise<{
   let running = false;
 
   try {
-    const { stdout } = await execAsync('sc query NightOwlDaemon 2>nul || echo NOT_FOUND');
-    installed = !stdout.includes('NOT_FOUND') && stdout.includes('NightOwlDaemon');
-    running = stdout.includes('RUNNING');
+    const { stdout } = await execAsync(`schtasks /Query /TN ${WINDOWS_TASK_NAME} /FO LIST 2>nul`);
+    if (stdout.includes(WINDOWS_TASK_NAME)) {
+      installed = true;
+      running = /Status:\s*Running/i.test(stdout);
+    }
   } catch {
+    // schtasks exits non-zero when the task doesn't exist — treat as "not installed".
     installed = false;
     running = false;
   }
@@ -205,33 +224,71 @@ async function installMacosDaemon(): Promise<{ ok: boolean; error?: string }> {
 }
 
 /**
- * Install Windows daemon/service
+ * Install Windows daemon as a Scheduled Task.
+ *
+ * Architecture choice (W1): we use Task Scheduler with a logon trigger +
+ * minute-by-minute repetition, running as the user, NOT a Windows Service.
+ *   - Services run in Session 0 — toast notifications they fire never reach
+ *     the user's desktop. A silent-shutdown UX is unacceptable.
+ *   - The Task Scheduler trigger fires at user logon and the daemon runs
+ *     forever in the user session. The minute-repetition with
+ *     MultipleInstancesPolicy=IgnoreNew acts as a watchdog: if the user kills
+ *     the process, it relaunches within ~60s.
+ *   - Realistic threat model is "user wants to bypass at curfew" which is
+ *     always post-login. Pre-login enforcement is a v3.5 concern.
+ *
+ * The install flow:
+ *   1. Resolve user identity + paths in the desktop's user context (BEFORE
+ *      UAC elevation, because after elevation %USERNAME% / %APPDATA% refer
+ *      to the admin account, not the user we want to enforce against).
+ *   2. Write task XML to %TEMP%.
+ *   3. Write a one-shot install .bat to %TEMP% that copies nightowld.exe into
+ *      %PROGRAMDATA%\NightOwl\ and registers + starts the task.
+ *   4. Run that .bat via sudo-prompt — single UAC prompt for the user.
+ *   5. Clean up temp files.
  */
 async function installWindowsDaemon(): Promise<{ ok: boolean; error?: string }> {
   const daemonSource = getDaemonPath();
   if (!daemonSource || !fs.existsSync(daemonSource)) {
-    return { ok: false, error: 'Daemon binary not found' };
+    return { ok: false, error: 'nightowld.exe not found. Did you run `npm run build:daemon` and `npm run package:win -w packages/daemon`?' };
   }
 
-  const targetPath = path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'NightOwl', 'nightowld.exe');
-  const targetDir = path.dirname(targetPath);
+  // Pre-elevation: capture user identity that won't survive UAC.
+  const targetUser = resolveWindowsUserIdentifier();
+  const dryRun = process.env.NIGHTOWL_DRY_RUN === '1';
 
-  // Create directory and copy daemon
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-  fs.copyFileSync(daemonSource, targetPath);
+  // Write task XML in user context (utf-16 LE BOM required by schtasks)
+  const tempDir = os.tmpdir();
+  const taskXmlPath = path.join(tempDir, `NightOwlDaemon-${Date.now()}.xml`);
+  const xmlContent = createWindowsTaskXml({
+    exePath: WINDOWS_DAEMON_EXE,
+    workingDirectory: WINDOWS_INSTALL_DIR,
+    userId: targetUser,
+    dryRun,
+  });
+  // Task Scheduler requires UTF-16 LE with BOM for /XML imports.
+  fs.writeFileSync(taskXmlPath, '﻿' + xmlContent, { encoding: 'utf16le' });
 
-  // Install as Windows service
+  // Write the install .bat that runs elevated.
+  const installBatPath = path.join(tempDir, `nightowl-install-${Date.now()}.bat`);
+  const installScript = [
+    '@echo off',
+    `if not exist "${WINDOWS_INSTALL_DIR}" mkdir "${WINDOWS_INSTALL_DIR}"`,
+    `copy /Y "${daemonSource}" "${WINDOWS_DAEMON_EXE}"`,
+    `if errorlevel 1 exit /b 1`,
+    `schtasks /Create /XML "${taskXmlPath}" /TN ${WINDOWS_TASK_NAME} /F`,
+    `if errorlevel 1 exit /b 2`,
+    `schtasks /Run /TN ${WINDOWS_TASK_NAME}`,
+    `exit /b 0`,
+  ].join('\r\n');
+  fs.writeFileSync(installBatPath, installScript);
+
   const sudoPrompt = await import('sudo-prompt');
-  const commands = [
-    `sc create NightOwlDaemon binPath="${targetPath}" start=auto`,
-    `sc description NightOwlDaemon "NightOwl curfew enforcement daemon"`,
-    `sc start NightOwlDaemon`,
-  ].join(' && ');
-
   return new Promise((resolve) => {
-    sudoPrompt.exec(commands, { name: 'NightOwl' }, (error) => {
+    sudoPrompt.exec(`"${installBatPath}"`, { name: 'NightOwl' }, (error) => {
+      try { fs.unlinkSync(taskXmlPath); } catch {}
+      try { fs.unlinkSync(installBatPath); } catch {}
+
       if (error) {
         resolve({ ok: false, error: error.message || 'Installation cancelled' });
       } else {
@@ -239,6 +296,24 @@ async function installWindowsDaemon(): Promise<{ ok: boolean; error?: string }> 
       }
     });
   });
+}
+
+/**
+ * Resolve a Task Scheduler-acceptable user identifier for the desktop's user.
+ *
+ * Task XML's `<UserId>` accepts `DOMAIN\username`, `username` (current
+ * machine), or an SID. The simplest reliable form on a personal Windows box
+ * is `COMPUTERNAME\username` — but for domainless local accounts, just the
+ * username works too. We use `${USERDOMAIN}\${USERNAME}` when available,
+ * falling back to bare `os.userInfo().username`.
+ */
+function resolveWindowsUserIdentifier(): string {
+  const username = os.userInfo().username;
+  const domain = process.env.USERDOMAIN;
+  if (domain && domain.length > 0 && domain !== username) {
+    return `${domain}\\${username}`;
+  }
+  return username;
 }
 
 /**
@@ -295,18 +370,41 @@ async function uninstallMacosDaemon(): Promise<{ ok: boolean; error?: string }> 
 }
 
 /**
- * Uninstall Windows daemon
+ * Uninstall Windows daemon.
+ *
+ * Best-effort: kill the process, delete the Scheduled Task, then remove the
+ * installed .exe. Each step is followed by `2>nul || ver >nul` to swallow
+ * "not found" errors without breaking the chain — uninstall should succeed
+ * even on partial-install states.
+ *
+ * IMPORTANT: schedule.json, focus.json, and pairing state are intentionally
+ * NOT deleted here. They live in %APPDATA%\NightOwl and are owned by the
+ * user; preserving them lets the user re-install without losing config. The
+ * Friend Lock delegation cleanup (forgetting the friend's chat_id, etc.)
+ * happens at the application layer in friendlock.ts BEFORE this function is
+ * called — see the daemon:uninstall IPC path.
  */
 async function uninstallWindowsDaemon(): Promise<{ ok: boolean; error?: string }> {
   const sudoPrompt = await import('sudo-prompt');
 
-  const commands = [
-    `sc stop NightOwlDaemon 2>nul`,
-    `sc delete NightOwlDaemon`,
-  ].join(' && ');
+  // Build the uninstall .bat in user temp so we can use multi-line clearly.
+  const tempDir = os.tmpdir();
+  const uninstallBatPath = path.join(tempDir, `nightowl-uninstall-${Date.now()}.bat`);
+  const uninstallScript = [
+    '@echo off',
+    `schtasks /End /TN ${WINDOWS_TASK_NAME} 2>nul`,
+    `taskkill /F /IM nightowld.exe 2>nul`,
+    `schtasks /Delete /TN ${WINDOWS_TASK_NAME} /F 2>nul`,
+    `if exist "${WINDOWS_DAEMON_EXE}" del /F /Q "${WINDOWS_DAEMON_EXE}"`,
+    // Always exit 0 — uninstall is idempotent.
+    `exit /b 0`,
+  ].join('\r\n');
+  fs.writeFileSync(uninstallBatPath, uninstallScript);
 
   return new Promise((resolve) => {
-    sudoPrompt.exec(commands, { name: 'NightOwl' }, (error) => {
+    sudoPrompt.exec(`"${uninstallBatPath}"`, { name: 'NightOwl' }, (error) => {
+      try { fs.unlinkSync(uninstallBatPath); } catch {}
+
       if (error) {
         resolve({ ok: false, error: error.message || 'Uninstall cancelled' });
       } else {
@@ -317,16 +415,19 @@ async function uninstallWindowsDaemon(): Promise<{ ok: boolean; error?: string }
 }
 
 /**
- * Get path to daemon entry script. Since we ship the daemon as a Node script
- * (no compiled `pkg` binary), this resolves to the built `index.js`.
+ * Get path to daemon entry. On macOS the daemon ships as a Node script
+ * (`dist/index.js`); on Windows we ship a self-contained executable
+ * (`dist/nightowld.exe`) built via @yao-pkg/pkg so Task Scheduler has a
+ * binary to launch (sc/schtasks reject .js paths).
  */
 function getDaemonPath(): string | null {
+  const filename = os.platform() === 'win32' ? 'nightowld.exe' : 'index.js';
   const possiblePaths = [
     // Production (packaged Electron app — extraResources copies daemon/dist → resources/daemon)
-    path.join(process.resourcesPath || '', 'daemon', 'index.js'),
+    path.join(process.resourcesPath || '', 'daemon', filename),
     // Development — when running via `npm run dev` from monorepo root
-    path.join(app.getAppPath(), '..', 'daemon', 'dist', 'index.js'),
-    path.join(app.getAppPath(), '..', '..', 'packages', 'daemon', 'dist', 'index.js'),
+    path.join(app.getAppPath(), '..', 'daemon', 'dist', filename),
+    path.join(app.getAppPath(), '..', '..', 'packages', 'daemon', 'dist', filename),
   ];
 
   for (const p of possiblePaths) {
@@ -387,4 +488,89 @@ function createMacosPlist(opts: {
     <string>/var/log/nightowl.log</string>
 </dict>
 </plist>`;
+}
+
+/**
+ * Create Windows Task Scheduler XML for the daemon.
+ *
+ * Trigger semantics:
+ *   - LogonTrigger fires once when the resolved user logs in.
+ *   - The Repetition block re-triggers every minute "indefinitely"
+ *     (PT1M / no Duration → repeat forever) as a watchdog. Combined with
+ *     MultipleInstancesPolicy=IgnoreNew, this means: if the process is
+ *     already running, the repetition is suppressed; if the user kills it,
+ *     the next minute trigger brings it back.
+ *
+ * RunLevel=LeastPrivilege + LogonType=InteractiveToken: the daemon runs in
+ * the user's session, NOT as SYSTEM. Trade-off documented at the call site.
+ *
+ * Dry-run mode is passed as a `--dry-run` CLI flag because Task Scheduler XML
+ * has no clean way to set process environment variables on an Exec action.
+ * The daemon entry parses it into NIGHTOWL_DRY_RUN internally.
+ */
+function createWindowsTaskXml(opts: {
+  exePath: string;
+  workingDirectory: string;
+  userId: string;
+  dryRun: boolean;
+}): string {
+  // XML escape the user-controlled values that go into attributes/text.
+  const esc = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const args = opts.dryRun ? '<Arguments>--dry-run</Arguments>' : '';
+
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>NightOwl curfew enforcement daemon</Description>
+    <Author>NightOwl</Author>
+    <URI>\\${WINDOWS_TASK_NAME}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${esc(opts.userId)}</UserId>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${esc(opts.userId)}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <Priority>5</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${esc(opts.exePath)}</Command>
+      ${args}
+      <WorkingDirectory>${esc(opts.workingDirectory)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>`;
 }

@@ -26,6 +26,8 @@
     "package": "npm run build && npm run package -w packages/desktop",
     "package:mac": "npm run build && npm run package:mac -w packages/desktop",
     "package:win": "npm run build && npm run package:win -w packages/desktop",
+    "package:mac:installer": "bash scripts/build-mac.sh",
+    "package:win:installer": "bash scripts/build-win.sh",
     "package:dir": "npm run build && npm run package:dir -w packages/desktop"
   },
   "devDependencies": {

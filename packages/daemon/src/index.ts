@@ -15,7 +15,19 @@ const platform = os.platform();
  * Main entry point
  */
 async function main(): Promise<void> {
+  // CLI flags are the only way to influence runtime mode on Windows because
+  // Task Scheduler XML has no clean environment-variable injection on Exec
+  // actions. On macOS the launchd plist sets these env vars instead — both
+  // paths converge on the same process.env reads inside the enforcement loop.
+  if (process.argv.includes('--dry-run')) {
+    process.env.NIGHTOWL_DRY_RUN = '1';
+  }
+  if (process.argv.includes('--test-mode')) {
+    process.env.NIGHTOWL_TEST_MODE = '1';
+  }
+
   const testMode = process.env.NIGHTOWL_TEST_MODE === '1';
+  const dryRun = process.env.NIGHTOWL_DRY_RUN === '1';
 
   appendLog('==========================================');
   appendLog(`NightOwl daemon v${VERSION} starting (PID: ${process.pid})`);
@@ -24,6 +36,9 @@ async function main(): Promise<void> {
 
   if (testMode) {
     appendLog('*** TEST MODE ACTIVE ***');
+  }
+  if (dryRun) {
+    appendLog('*** DRY-RUN MODE — warnings + notifications fire, shutdown is skipped ***');
   }
 
   // Handle shutdown signals gracefully

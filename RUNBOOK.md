@@ -240,3 +240,142 @@ NIGHTOWL_BOT_URL=https://<WORKER_URL> npm run dev:desktop
 In the renderer: switch the lock-mode toggle to **Friend**, click **Generate Pair Code**, hand the 8-char code to a friend (or yourself in a second Telegram account), have them DM the bot `/pair <CODE>` then `/setpassword <PW>`. Within ~10 seconds the desktop should transition `enrolled → paired → awaiting_password → active` and the lock activates.
 
 If the desktop logs `bot unreachable`: check `NIGHTOWL_BOT_URL` is set, `npx wrangler tail` from `packages/bot/` for live logs, and verify `/healthz` returns `ok` (`curl https://<WORKER_URL>/healthz`).
+
+---
+
+## 9. v3 Windows Lock — first-time install on Windows (alpha)
+
+Windows port lives behind the same desktop UI / Friend Lock flow as macOS. The only platform-specific piece is the daemon: macOS uses a launchd plist running as root, Windows uses a Scheduled Task running as the user (Session 0 forces the user-session split — see `CLAUDE.md` v3 section for the architectural rationale).
+
+### 9.1 Cross-build the Windows artifacts on macOS
+
+The `nightowld.exe` daemon binary is produced from macOS via esbuild + `@yao-pkg/pkg`:
+
+```bash
+# From the monorepo root
+npm install
+npm run package:win -w packages/daemon
+
+# Verify the produced binary
+file packages/daemon/dist/nightowld.exe
+#  → PE32+ executable (console) x86-64, for MS Windows
+```
+
+The .exe is ~41 MB, self-contained (Node runtime + bundled daemon code; no external deps because `bcrypt` is lazy-loaded in `@nightowl/shared/crypto.ts` and the daemon never calls password functions).
+
+For an end-to-end NSIS installer that friends can download and run:
+
+```bash
+npm run package:win:installer
+# → produces dist/NightOwl-Setup-<version>.exe (unsigned)
+```
+
+Unsigned means Windows SmartScreen will flag it on first run. Friends will see "Windows protected your PC" — they click **More info** → **Run anyway**.
+
+### 9.2 Friend-side install (the .exe path)
+
+What friends actually need to do once they have `NightOwl-Setup-<version>.exe`:
+
+1. Right-click → **Run as administrator** (UAC is required so the installer can create the Scheduled Task).
+2. Click through the NSIS wizard. Default install path is `C:\Users\<name>\AppData\Local\Programs\NightOwl`.
+3. Launch NightOwl from the Start Menu.
+4. In the app, click **Install Daemon** when prompted. A second UAC dialog appears — the desktop is registering the Scheduled Task via `schtasks /Create /XML`.
+5. Verify the daemon is running:
+
+   ```powershell
+   schtasks /Query /TN NightOwlDaemon /FO LIST
+   # Status: Running
+   Get-Content $env:PROGRAMDATA\NightOwl\nightowl.log -Tail 20
+   ```
+
+6. Configure the schedule + lock duration in the UI, pair with a friend's Telegram bot (same flow as §8.2 — the bot doesn't care about OS), and **Lock It In**.
+
+### 9.3 Developer install (no NSIS, fast iteration)
+
+For us — and for developer friends — testing with a cloned repo:
+
+```powershell
+# From any PowerShell (elevated or not), in the repo root.
+# The script auto-elevates via UAC if needed.
+.\scripts\install-dev.ps1            # dry-run mode (safe — warnings fire, no shutdown)
+.\scripts\install-dev.ps1 -Enforce   # actually shuts down on curfew (asks for "yes" confirmation)
+.\scripts\install-dev.ps1 -Uninstall # remove the task
+```
+
+If PowerShell's execution policy blocks the .ps1 file (`script.ps1 cannot be loaded because running scripts is disabled on this system`), use the explicit bypass form — execution policy is scoped to the child process, nothing is persisted:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dev.ps1
+```
+
+The script:
+- Self-elevates if you're not already in an admin shell — triggers exactly one UAC prompt, then everything (build + register + start) runs in the elevated child.
+- Builds the daemon if `packages\daemon\dist\nightowld.exe` is missing (runs `npm install` + `npm run package:win -w packages/daemon`).
+- Generates a Task Scheduler XML pointing at the dev `.exe` (NOT `%PROGRAMDATA%\NightOwl\` — that's the production install location).
+- Registers the task as `NightOwlDaemon` running as the current user, logon trigger + 1-minute repetition.
+- Starts the task immediately so you can `Get-Content $env:PROGRAMDATA\NightOwl\nightowl.log -Wait` and watch decisions.
+
+**Friend-of-developer setup (one-shot, no further explanation needed):**
+
+```powershell
+git clone https://github.com/asmeedhungana/nightowl.git
+cd nightowl
+git checkout feat/v2-friend-lock-alpha
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dev.ps1
+```
+
+Three lines, one UAC prompt, ~2-minute build, dry-run-safe daemon registered.
+
+### 9.4 Drop a test schedule
+
+The daemon reads `%APPDATA%\NightOwl\schedule.json`. To force an immediate dry-run enforcement (without using the UI):
+
+```powershell
+$schedulePath = "$env:APPDATA\NightOwl\schedule.json"
+New-Item -ItemType Directory -Force -Path (Split-Path $schedulePath) | Out-Null
+@"
+{
+  "active": true,
+  "lockPeriodDays": 1,
+  "lockStartDate": "2026-05-12T00:00:00.000Z",
+  "lockEndDate": "2026-05-13T00:00:00.000Z",
+  "days": {
+    "monday":    { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "tuesday":   { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "wednesday": { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "thursday":  { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "friday":    { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "saturday":  { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "sunday":    { "curfewStart": "00:00", "curfewEnd": "23:59" }
+  },
+  "timezone": "America/New_York",
+  "user": "$env:USERNAME"
+}
+"@ | Set-Content -Path $schedulePath -Encoding UTF8
+```
+
+Within ~60 s the daemon's log should show `CURFEW ACTIVE` followed by the 45-second toast notification firing (look for the Windows action center toast). In dry-run mode it logs `[DRY-RUN] Would shutdown` and stops there.
+
+### 9.5 Friend Lock on Windows (same as macOS)
+
+The Friend Lock pairing + uninstall-approval flow is OS-agnostic. After the daemon is registered (§9.2 or §9.3) and the bot is reachable (§8), do exactly what §8.2 says — generate the pair code in the desktop UI, friend DMs the bot `/pair` + `/setpassword`, lock activates. `/approve` of an uninstall request also works identically.
+
+### 9.6 What's NOT in W1
+
+- **Tamper-resistance on `schedule.json`.** The Scheduled Task runs as the user (not SYSTEM), so it has no privilege the user doesn't already have to ACL the file. macOS's `chown root:wheel` equivalent is genuinely hard on Windows without elevating each schedule edit through UAC. See `CLAUDE.md` v3 section "load-bearing invariants" for the W2 plan.
+- **Code signing of the NSIS installer.** Builds today are unsigned → SmartScreen warning on first run. Acquiring a code-signing cert is a v3.5 ops task.
+- **Live-on-metal validation.** The cross-build from macOS produces a valid PE32+ binary, but Defender false-positives on unsigned new-publisher binaries can vary VM vs metal. Friends running the .exe on real hardware are the canary.
+- **`getConsoleUser` Windows sibling.** Not needed — Task Scheduler runs the daemon as the user, so `os.userInfo().username` returns the right value directly. The `getTargetUser()` chain in `packages/daemon/src/core/enforce.ts` falls through correctly without a Windows-specific console-user lookup.
+
+### 9.7 Uninstalling
+
+From the app: click **Uninstall NightOwl** in the Settings panel. The desktop tears down Scheduled Task → kills `nightowld.exe` → deletes the installed `.exe`. `%APPDATA%\NightOwl\` (schedule + focus + pairing state) is intentionally preserved so re-installing is non-destructive.
+
+From the command line:
+
+```powershell
+schtasks /End /TN NightOwlDaemon
+taskkill /F /IM nightowld.exe
+schtasks /Delete /TN NightOwlDaemon /F
+Remove-Item "$env:PROGRAMDATA\NightOwl\nightowld.exe" -Force
+```

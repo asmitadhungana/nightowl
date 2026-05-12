@@ -144,8 +144,8 @@ bash nightowl.sh test
 - Keep it simple — this is a single-user tool
 
 ## Important Constraints
-- **macOS only** — uses launchd, osascript, macOS shutdown commands
-- **Requires root for daemon** — enforcement must run as root to prevent user bypass
+- **macOS only in v1** — v1 daemon uses launchd, osascript, macOS shutdown commands. **v3 adds Windows** via a Task Scheduler-launched `nightowld.exe` (cross-built from macOS via `@yao-pkg/pkg`). See the v3 section below.
+- **Requires root for daemon on macOS** — enforcement must run as root to prevent user bypass. **Windows daemon runs as the user** (Task Scheduler, not Windows Service) — Session 0 forces this trade-off; see v3 section.
 - **Node.js required** — for web server
 - **Python3 required** — used by daemon for timezone-aware time calculations
 - **No external services for v1** — everything runs locally. **Narrowly relaxed in v2** for Friend Lock (Telegram bot + Cloudflare Worker, see the v2 section below). Anything beyond friend-mediated password delivery should still default to local.
@@ -217,4 +217,53 @@ Refused options with reasons. If a future request asks for one of these, surface
 - Bot integration tests — `packages/bot` currently has only a placeholder test script.
 - Bake a hosted Worker URL into `BOT_URL` once the self-hosting story is settled (M6 added a packaged-build startup warning as a soft alternative).
 - Self-healing daemon (carried over from v1 — see "Critical #5" above; not blocking v2).
+
+---
+
+## v3 — Windows Lock (alpha, branch `feat/v2-friend-lock-alpha` through W3)
+
+Windows port of NightOwl. v2 Friend Lock + Friend Focus are OS-agnostic by construction (Cloudflare Worker bot, Ed25519, the pairing dance) — the only platform-specific layer is the enforcement daemon. v3 ships that for Windows.
+
+### Architecture
+
+```
+nightowld.exe  (PE32+ x86-64, ~41 MB, self-contained Node + bundled CJS)
+   ↑ tsc → esbuild --bundle --format=cjs --external:bcrypt → @yao-pkg/pkg
+   ↑ packages/daemon/src/{index,core,windows,macos}/*
+
+Registered via Windows Task Scheduler as `NightOwlDaemon`:
+   - LogonTrigger as the user (NOT SYSTEM)
+   - 1-minute repetition + MultipleInstancesPolicy=IgnoreNew (watchdog)
+   - RunLevel=LeastPrivilege, LogonType=InteractiveToken (user session)
+```
+
+The desktop's `installDaemon` IPC on Windows generates the Task XML, writes a temp `.bat` that does `mkdir + copy + schtasks /Create /XML /F + schtasks /Run`, and invokes that .bat via `sudo-prompt`. Single UAC prompt for the user.
+
+### Load-bearing decisions
+
+If a future request would relax any of these, push back.
+
+- **Task Scheduler, NOT Windows Service.** Services run in Session 0 — toast notifications never reach the user's desktop. The 45/15-second warning UX collapses to a silent kill. Realistic threat model is post-login bypass, which is exactly what Task-Scheduler-as-user covers.
+- **Daemon binary is cross-built from macOS via `@yao-pkg/pkg`.** Reproducible, single command. `pkg` (the original) is unmaintained; `node-windows` adds a shipped runtime dep that we'd then have to maintain.
+- **bcrypt is lazy-loaded in `@nightowl/shared/crypto.ts`** so the daemon bundle has no native dependencies. Verified `grep -c bcrypt dist/nightowld.cjs` → 0. The shape of `hashPassword` / `verifyPassword` is unchanged for callers.
+- **Dry-run mode passes through `--dry-run` CLI arg**, not env vars. Task Scheduler XML's `<Exec>` action has no clean env-var injection on a `<Command>`. The daemon entry parses argv into `process.env.NIGHTOWL_DRY_RUN` so the enforcement-loop reads a single source.
+- **`lockScheduleFile()` is a no-op on win32.** With daemon-as-user, any ACL it could set the user can unset — meaningful tamper-resistance requires either SYSTEM (Session 0 again) or per-activation UAC elevation. Deferred to W2; do NOT add a half-functional icacls call.
+
+### Per-milestone history → `changes/`
+
+- **W1** (this milestone, 2026-05-12) — `nightowld.exe` cross-build pipeline, Task Scheduler registration via `privileged.ts`, `scripts/install-dev.ps1`, `scripts/build-win.sh` standalone NSIS builder, RUNBOOK §9 covering install + Friend-Lock-on-Windows parity. No tamper resistance, no live-on-metal validation, no signed installer.
+
+### Paths intentionally NOT taken (in addition to v2's list)
+
+- **Running the daemon as SYSTEM with a user-mode helper.** Closes the tamper-resistance gap but doubles the moving parts. Promote later only if W3 metal-testing exposes user-deletes-the-task as a real-world bypass.
+- **`getConsoleUser` Windows sibling.** macOS needs it because launchd runs daemon as root and we need to find the actual GUI user. Windows Task Scheduler runs the daemon AS the user, so `os.userInfo().username` is already correct; an extra layer would be dead code.
+- **Code signing the NSIS installer.** ~$200/yr cost, SmartScreen reputation takes weeks to build. Friends acknowledge the unsigned warning during W3 testing.
+- **Filesystem-level tamper-resistance on `schedule.json` in W1.** See the load-bearing decision above; W2 will revisit.
+- **Universal x86-64 + ARM64 .exe.** ARM64 Windows install base is tiny; we ship x64 only.
+
+### Open work
+
+- **W2** — toast UX polish, decide on UAC-on-activation for `schedule.json` lockdown, validate dry-run path against real Defender behavior.
+- **W3** — first live install on real Windows hardware. Bot pair + setpassword + uninstall request + Friend Focus E2E. RUNBOOK §9 already has the script.
+- Self-healing daemon — still carried from v1, still not blocking.
 

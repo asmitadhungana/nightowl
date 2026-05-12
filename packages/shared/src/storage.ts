@@ -200,8 +200,16 @@ export function appendLog(message: string): void {
  * Best-effort tamper resistance during an active lock — a determined user can
  * still escalate, but the casual `vim schedule.json` bypass is closed.
  * No-op if not root or if file is missing.
+ *
+ * Windows: deliberately a no-op for W1. The Task Scheduler daemon runs as the
+ * user (not SYSTEM) to keep toast notifications in the user session, which
+ * means it has no privilege the user doesn't already have — any ACL it could
+ * set, the user can unset. Real Windows lockdown would require either running
+ * as SYSTEM (Session 0 → toasts don't reach the desktop) or routing every
+ * schedule activation through a UAC elevation. Tracked as W2 follow-up.
  */
 export function lockScheduleFile(filePath?: string): void {
+  if (os.platform() === 'win32') return;
   if (process.getuid && process.getuid() !== 0) return;
   const target = filePath || getSchedulePath();
   if (!fs.existsSync(target)) return;
@@ -221,9 +229,11 @@ export function lockScheduleFile(filePath?: string): void {
 /**
  * Restore user ownership of schedule.json so the desktop app can save again.
  * Reads the target user from the schedule's `user` field (set by desktop on save)
- * or falls back to the supplied uid/gid. No-op if not root.
+ * or falls back to the supplied uid/gid. No-op if not root or on Windows
+ * (where lockScheduleFile is itself a no-op — see W1 note above).
  */
 export function unlockScheduleFile(uid: number, gid: number, filePath?: string): void {
+  if (os.platform() === 'win32') return;
   if (process.getuid && process.getuid() !== 0) return;
   const target = filePath || getSchedulePath();
   if (!fs.existsSync(target)) return;
