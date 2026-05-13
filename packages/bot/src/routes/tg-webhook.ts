@@ -74,6 +74,8 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
       await handleSetPassword(env, chatId, pw);
     } else if (text === '/help') {
       await sendMessage(env.TG_BOT_TOKEN, chatId, HELP_MESSAGE);
+    } else if (text === '/install') {
+      await sendMessage(env.TG_BOT_TOKEN, chatId, INSTALL_MESSAGE);
     } else if (text === '/status') {
       await handleStatus(env, chatId);
     } else if (text === '/revoke') {
@@ -107,6 +109,7 @@ To get started:
 That's it. Your friend's lock activates the moment I forward the password.`;
 
 const HELP_MESSAGE = `Commands:
+/install             — download NightOwl for your machine
 /pair <CODE>         — claim a pair code your friend gave you
 /setpassword <PW>    — set their lock password (sent over Telegram, deleted immediately)
 /status              — show your active pairings
@@ -116,6 +119,23 @@ const HELP_MESSAGE = `Commands:
 /help                — this message
 
 Privacy: I never store your password. I hash it in memory (bcrypt) and forward only the hash to your friend's machine.`;
+
+const INSTALL_MESSAGE = `🦉 NightOwl — Windows alpha
+
+Download: https://github.com/asmitadhungana/nightowl/releases/download/v3.0.0-alpha.1/NightOwl-Setup-2.0.0.exe
+
+Install steps:
+1. Right-click the .exe → Run as administrator.
+2. Windows SmartScreen will warn it's unsigned. Click "More info" → "Run anyway".
+3. Walk through the installer (defaults are fine).
+4. Open NightOwl from the Start Menu → click "Install Daemon" (one more UAC prompt).
+5. Set your curfew hours per day and how many days to lock yourself in for.
+6. Switch lock mode to "Friend" → click "Generate Pair Code".
+7. Send the 8-character code (privately, not in a group) to the person who'll hold your lock password.
+
+Heads up: alpha build. Real shutdowns. Save your work before testing.
+
+macOS: not yet served from here — ask your locker for a build.`;
 
 /** Handle /pair CODE. */
 async function handlePair(
