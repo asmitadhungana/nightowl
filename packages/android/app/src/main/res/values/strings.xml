@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NightOwl</string>
+    <string name="device_admin_description">Allows NightOwl to lock the screen during curfew hours that you and your locker have agreed on. The locker holds the password and can approve uninstall on request.</string>
+</resources>
