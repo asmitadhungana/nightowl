@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">NightOwl</string>
     <string name="device_admin_description">Allows NightOwl to lock the screen during curfew hours that you and your locker have agreed on. The locker holds the password and can approve uninstall on request.</string>
+    <string name="accessibility_service_summary">Blocks non-essential apps during curfew</string>
+    <string name="accessibility_service_description">During curfew hours, NightOwl bounces non-allowlisted apps back to the home screen so you can\'t open them. Phone, Settings, and the launcher stay reachable for emergencies and uninstall flow. NightOwl only reads which app is in the foreground — it does not read screen contents.</string>
 </resources>

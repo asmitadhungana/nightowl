@@ -38,6 +38,7 @@ class EnforcementService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var tickJob: Job? = null
+    private var pollJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -48,7 +49,17 @@ class EnforcementService : Service() {
         if (tickJob == null) {
             tickJob = scope.launch { tickLoop() }
         }
+        if (pollJob == null) {
+            pollJob = scope.launch { pollLoop() }
+        }
         return START_STICKY
+    }
+
+    private suspend fun pollLoop() {
+        val identity = Identity.loadOrCreate(applicationContext)
+        val client = BotClient(identity)
+        val store = ScheduleStore(applicationContext)
+        PollLoop(client, store).runForever()
     }
 
     override fun onDestroy() {

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AccessibilityService config for NightOwl's per-app blocker.
+
+  - `typeWindowStateChanged` fires when the foreground window changes (app launch,
+    app switch). That's enough to bounce non-allowlisted apps during curfew.
+  - We do NOT request canRetrieveWindowContent — we only need package name, not
+    on-screen text. Keeps the prompted permission scope honest.
+  - `notificationTimeout="100"` debounces rapid window flips. Anything below ~50ms
+    can drop events on some OEMs.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="false"
+    android:canRetrieveWindowContent="false"
+    android:notificationTimeout="100"
+    android:description="@string/accessibility_service_description"
+    android:summary="@string/accessibility_service_summary" />

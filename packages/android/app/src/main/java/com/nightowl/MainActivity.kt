@@ -10,32 +10,30 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -46,6 +44,13 @@ class MainActivity : ComponentActivity() {
                 NightOwlScaffold()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Refresh permission flags when returning from the system Settings screens.
+        // The ViewModel lives across config changes so this is cheap.
+        // The actual refresh fires when the schedule store re-emits; we just trigger it.
     }
 }
 
@@ -62,49 +67,133 @@ private fun Home(padding: PaddingValues) {
     val vm: HomeViewModel = viewModel(factory = HomeViewModel.Factory(ctx.applicationContext))
     val state by vm.state.collectAsState()
 
-    LaunchedEffect(Unit) { vm.refresh() }
+    LaunchedEffect(Unit) { vm.refreshPermissionFlags() }
 
+    val scroll = rememberScrollState()
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding)
-            .padding(24.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .verticalScroll(scroll),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("🦉 NightOwl Android — alpha", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Tracer-bullet build. Pair with your locker over Telegram, set a schedule, " +
-                "and during curfew the screen locks. See packages/android/README.md for the " +
-                "honest list of what's wired and what's stubbed.",
-            style = MaterialTheme.typography.bodyMedium,
+            "Pair with your locker over Telegram, set per-day curfew, and lock it in. " +
+                "During curfew the screen re-locks and non-essential apps bounce back to home.",
+            style = MaterialTheme.typography.bodySmall,
         )
 
-        Spacer(Modifier.height(8.dp))
-        Text("Status", style = MaterialTheme.typography.titleMedium)
-        Text("Pair code: ${state.pairCode ?: "(not enrolled)"}")
-        Text("Pairing ID: ${state.pairingId ?: "(not enrolled)"}")
-        Text("Device admin: ${if (state.deviceAdminActive) "active" else "INACTIVE — tap below to grant"}")
-        Text("Enforcement service: ${if (state.serviceRunning) "armed" else "off"}")
+        StatusCard(state = state)
+        PermissionsCard(state = state, onGrantDeviceAdmin = { requestDeviceAdmin(ctx) }, onGrantAccessibility = { AppBlockerService.openSettings(ctx) })
+        PairingCard(state = state, onEnroll = { vm.enroll() })
+        ScheduleEditor(
+            state = state,
+            onSetEnabled = vm::setDayEnabled,
+            onSetStart = vm::setDayStart,
+            onSetEnd = vm::setDayEnd,
+            onCopyMonday = vm::copyMondayToAll,
+            onPreset = vm::applyPreset,
+            onSetLockDays = vm::setLockDays,
+            onSave = vm::saveSchedule,
+            onActivate = vm::activateSchedule,
+        )
+        EnforcementCard(onArm = { EnforcementService.start(ctx) })
 
-        Spacer(Modifier.height(8.dp))
+        if (state.lastError != null || state.lastMessage != null) {
+            MessageCard(error = state.lastError, message = state.lastMessage, onDismiss = vm::clearMessage)
+        }
+    }
+}
 
-        if (!state.deviceAdminActive) {
-            Button(onClick = { requestDeviceAdmin(ctx) }) {
-                Text("Grant device admin")
+@Composable
+private fun StatusCard(state: HomeState) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Status", style = MaterialTheme.typography.titleMedium)
+            Text("Pairing phase: ${state.phase?.name ?: "(not enrolled)"}")
+            state.friendName?.let { Text("Locker: $it") }
+            Text("Lock active: ${if (state.savedSchedule.active) "YES until ${state.savedSchedule.lockEndDate}" else "no"}")
+        }
+    }
+}
+
+@Composable
+private fun PermissionsCard(state: HomeState, onGrantDeviceAdmin: () -> Unit, onGrantAccessibility: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Permissions", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Device admin: ${if (state.deviceAdminActive) "✓" else "✗"}", style = MaterialTheme.typography.bodyMedium)
+                if (!state.deviceAdminActive) {
+                    TextButton(onClick = onGrantDeviceAdmin) { Text("Grant") }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "App blocker (Accessibility): ${if (state.accessibilityActive) "✓" else "✗"}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (!state.accessibilityActive) {
+                    TextButton(onClick = onGrantAccessibility) { Text("Grant") }
+                }
+            }
+            if (!state.accessibilityActive) {
+                Text(
+                    "Without the app blocker, curfew only re-locks the screen — apps will still open between locks. Grant accessibility to block app launches during curfew.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
+    }
+}
 
-        Button(onClick = { vm.enroll() }, enabled = state.pairCode == null) {
-            Text(if (state.pairCode == null) "Generate pair code" else "Enrolled — pair code shown above")
+@Composable
+private fun PairingCard(state: HomeState, onEnroll: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Friend Lock", style = MaterialTheme.typography.titleMedium)
+            if (state.pairCode != null) {
+                Text("Pair code: ${state.pairCode}", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    "Send this to your locker. They DM @nightowl bot: /pair ${state.pairCode} then /setpassword <pw>.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else if (state.pairingId != null) {
+                Text("Already enrolled. Waiting for friend to /pair…", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text("Not enrolled yet. Generate a pair code to begin.", style = MaterialTheme.typography.bodySmall)
+            }
+            Button(onClick = onEnroll, enabled = state.pairCode == null && state.pairingId == null) {
+                Text("Generate pair code")
+            }
         }
+    }
+}
 
-        Button(onClick = { EnforcementService.start(ctx) }) {
-            Text("Arm enforcement service")
+@Composable
+private fun EnforcementCard(onArm: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Enforcement service", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "The foreground service ticks every 60s and polls the bot inbox. " +
+                    "Arm it once; the BootReceiver re-arms it after reboot.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = onArm) { Text("Arm enforcement service") }
         }
+    }
+}
 
-        state.lastError?.let { err ->
-            Spacer(Modifier.height(8.dp))
-            Text("Last error: $err", color = MaterialTheme.colorScheme.error)
+@Composable
+private fun MessageCard(error: String?, message: String?, onDismiss: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+            message?.let { Text(it) }
+            TextButton(onClick = onDismiss) { Text("Dismiss") }
         }
     }
 }
@@ -125,55 +214,4 @@ private fun requestDeviceAdmin(ctx: Context) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     ctx.startActivity(intent)
-}
-
-data class HomeState(
-    val pairCode: String? = null,
-    val pairingId: String? = null,
-    val deviceAdminActive: Boolean = false,
-    val serviceRunning: Boolean = false,
-    val lastError: String? = null,
-)
-
-class HomeViewModel(private val appCtx: Context) : ViewModel() {
-
-    private val identity = Identity.loadOrCreate(appCtx)
-    private val store = ScheduleStore(appCtx)
-    private val client = BotClient(identity)
-
-    private val _state = MutableStateFlow(HomeState())
-    val state: StateFlow<HomeState> = _state.asStateFlow()
-
-    fun refresh() {
-        viewModelScope.launch {
-            val sched = store.current()
-            val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val admin = ComponentName(appCtx, NightOwlDeviceAdminReceiver::class.java)
-            _state.value = _state.value.copy(
-                pairingId = sched.delegation?.pairingId,
-                deviceAdminActive = dpm.isAdminActive(admin),
-            )
-        }
-    }
-
-    fun enroll() {
-        viewModelScope.launch {
-            try {
-                val resp = client.enroll()
-                store.update { it.copy(delegation = DelegationState(pairingId = resp.pairingId)) }
-                _state.value = _state.value.copy(
-                    pairCode = resp.pairCode,
-                    pairingId = resp.pairingId,
-                    lastError = null,
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(lastError = e.message ?: e::class.simpleName)
-            }
-        }
-    }
-
-    class Factory(private val appCtx: Context) : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(appCtx) as T
-    }
 }

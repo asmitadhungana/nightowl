@@ -56,10 +56,16 @@ class Identity private constructor(
             return Identity(keyPair.privateKey, keyPair.publicKey)
         }
 
-        /** Verify a base64-encoded signature from the bot. Returns true iff valid. */
+        /**
+         * Verify a base64-encoded signature from the bot. Returns true iff valid.
+         *
+         * The bot encodes with standard-alphabet base64 (`btoa` → `+/`), so we decode
+         * with [Base64.NO_WRAP] only — NOT [Base64.URL_SAFE], which would expect `-_`.
+         */
         fun verifyBotSignature(canonical: String, sigB64: String): Boolean {
             return try {
-                val sig = Base64.decode(sigB64, Base64.NO_WRAP or Base64.URL_SAFE)
+                val sig = Base64.decode(sigB64, Base64.NO_WRAP)
+                if (sig.size != 64) return false
                 Ed25519Verify(BOT_PUBKEY_HEX.hexToBytes()).verify(sig, canonical.toByteArray(Charsets.UTF_8))
                 true
             } catch (_: GeneralSecurityException) {

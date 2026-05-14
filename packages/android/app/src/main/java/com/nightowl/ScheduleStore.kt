@@ -12,13 +12,16 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 /**
  * Curfew schedule + pairing state, persisted to the app's private DataStore.
  *
- * Structurally mirrors [packages/shared/src/types.ts]'s Schedule but lives in a
- * Kotlin world. We do NOT share serialization with the desktop — Android sees
- * only its own copy, and the bot is the source of truth across both.
+ * Structurally mirrors `packages/shared/src/types.ts` + `packages/shared/src/delegation.ts`
+ * on the desktop, but in a Kotlin world. We do NOT share serialization with the
+ * desktop — Android sees only its own copy, and the bot is the source of truth
+ * across both.
  *
  * Curfew windows are stored as 24-hour HH:MM strings; null means "no curfew that day".
  * An overnight curfew (e.g. 22:00 → 06:00) is the responsibility of the consumer to
@@ -27,12 +30,41 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class DaySchedule(val curfewStart: String? = null, val curfewEnd: String? = null)
 
+/**
+ * Mirrors `DelegationPhase` in `packages/shared/src/delegation.ts`.
+ *
+ *   enrolled          — `/desktop/enroll` succeeded; friend hasn't typed `/pair`.
+ *   paired            — friend `/pair`'d; we know their name + chat id.
+ *   awaiting_password — same as paired but friend hasn't `/setpassword` yet.
+ *   active            — `password_hash` arrived + signature verified.
+ *   revoked           — friend `/revoke`'d. Lock continues; only escape is the 72h cooldown.
+ */
+@Serializable
+enum class DelegationPhase { enrolled, paired, awaiting_password, active, revoked }
+
+@Serializable
+data class UninstallVerdict(
+    val reqId: String,
+    val verdict: String, // "approved" | "denied"
+    val decidedAt: String,
+)
+
 @Serializable
 data class DelegationState(
     val pairingId: String,
-    val lastSeq: Long = 0,
-    val approvalGranted: Boolean = false,
-    val approvalReqId: String? = null,
+    val friendName: String? = null,
+    val friendChatId: String? = null,
+    val pairedAt: String? = null,
+    val lastConsumedSeq: Long = 0,
+    val phase: DelegationPhase = DelegationPhase.enrolled,
+    /** bcrypt hash of the lock password — set when [phase] flips to `active`. Never plaintext. */
+    val passwordHash: String? = null,
+    val passwordSetAt: String? = null,
+    /** Most recent uninstall verdict (A3 uses this fully). Persisted so a restart doesn't lose it. */
+    val lastUninstallDecision: UninstallVerdict? = null,
+    /** Most recent focus-release verdict (A3 uses this fully). */
+    val lastFocusReleaseDecision: UninstallVerdict? = null,
+    val friendRevokedAt: String? = null,
 )
 
 @Serializable
@@ -64,6 +96,31 @@ data class Schedule(
         }
     }
 }
+
+/** Lowercase ISO weekday names in display order. Stable across the app — used as map keys. */
+val DAY_KEYS: List<String> = listOf("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+/**
+ * Built-in presets — same shape as the macOS web UI's "Night Owl / Early Bird / Weekend Flex"
+ * buttons, ported by feel rather than by copy-paste from server.js.
+ */
+object Presets {
+    val NightOwl: Map<String, DaySchedule> = DAY_KEYS.associateWith { DaySchedule("22:00", "06:00") }
+    val EarlyBird: Map<String, DaySchedule> = DAY_KEYS.associateWith { DaySchedule("21:00", "05:00") }
+    val WeekendFlex: Map<String, DaySchedule> = mapOf(
+        "monday"    to DaySchedule("22:00", "06:00"),
+        "tuesday"   to DaySchedule("22:00", "06:00"),
+        "wednesday" to DaySchedule("22:00", "06:00"),
+        "thursday"  to DaySchedule("22:00", "06:00"),
+        "friday"    to DaySchedule("23:30", "07:00"),
+        "saturday"  to DaySchedule("23:30", "07:00"),
+        "sunday"    to DaySchedule("22:00", "06:00"),
+    )
+}
+
+/** Compute an ISO-8601 lockEndDate `days` from now. */
+fun lockEndDateIn(days: Int): String =
+    Instant.now().plus(days.toLong(), ChronoUnit.DAYS).toString()
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore("nightowl_schedule")
 private val SCHEDULE_KEY = stringPreferencesKey("schedule_json")

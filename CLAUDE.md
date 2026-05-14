@@ -251,7 +251,7 @@ If a future request would relax any of these, push back.
 
 ### Per-milestone history → `changes/`
 
-- **W1** (this milestone, 2026-05-12) — `nightowld.exe` cross-build pipeline, Task Scheduler registration via `privileged.ts`, `scripts/install-dev.ps1`, `scripts/build-win.sh` standalone NSIS builder, RUNBOOK §9 covering install + Friend-Lock-on-Windows parity. No tamper resistance, no live-on-metal validation, no signed installer.
+- **W1** (2026-05-12) — `nightowld.exe` cross-build pipeline, Task Scheduler registration via `privileged.ts`, `scripts/install-dev.ps1`, `scripts/build-win.sh` standalone NSIS builder, RUNBOOK §9 covering install + Friend-Lock-on-Windows parity. No tamper resistance, no live-on-metal validation, no signed installer.
 
 ### Paths intentionally NOT taken (in addition to v2's list)
 
@@ -265,5 +265,60 @@ If a future request would relax any of these, push back.
 
 - **W2** — toast UX polish, decide on UAC-on-activation for `schedule.json` lockdown, validate dry-run path against real Defender behavior.
 - **W3** — first live install on real Windows hardware. Bot pair + setpassword + uninstall request + Friend Focus E2E. RUNBOOK §9 already has the script.
+- Self-healing daemon — still carried from v1, still not blocking.
+
+---
+
+## v4 — Android Lock (alpha, branch `feat/v4-android-alpha` through A4)
+
+Android port of NightOwl. Same Cloudflare Worker bot, same Ed25519 wire format, same friend-held password — only the enforcement primitive differs. The macOS `shutdown` and Windows toast-then-lock pathways collapse to **repeated `DevicePolicyManager.lockNow()` + AccessibilityService-driven app blocking** because Android user apps can't power down the device.
+
+### Architecture
+
+```
+packages/android/         ← standalone Gradle project, NOT in npm workspaces
+├── app/build.gradle.kts  ← Compose 1.5.14, Tink 1.13.0, OkHttp 4.12, kotlinx.serialization
+├── app/src/main/java/com/nightowl/
+│   ├── MainActivity.kt + HomeViewModel.kt + ScheduleEditor.kt — Compose UI
+│   ├── ScheduleStore.kt — DataStore-backed Schedule + DelegationState (mirrors shared/types)
+│   ├── Identity.kt — Ed25519 keypair via Tink; BOT_PUBKEY_HEX matches packages/shared
+│   ├── BotClient.kt — OkHttp client for /desktop/{enroll,poll,request-uninstall}
+│   ├── PollLoop.kt — A2: recurring bot poll, sig verify, message dispatch
+│   ├── CanonicalJson.kt — A2: byte-for-byte mirror of packages/bot/src/crypto.ts canonicalJson
+│   ├── EnforcementService.kt — foreground service, 60s curfew tick + poll-loop coroutine
+│   ├── AppBlockerService.kt — A2: AccessibilityService that bounces non-allowlisted apps during curfew
+│   ├── NightOwlDeviceAdminReceiver.kt — DeviceAdmin for lockNow()
+│   └── BootReceiver.kt — re-arms enforcement after reboot
+```
+
+### Load-bearing decisions
+
+If a future request would relax any of these, push back.
+
+- **Android stays out of the npm workspaces.** Root `package.json` does not list `packages/android` — verified at every Android milestone. Adds zero bytes to the macOS / Windows desktop bundle and removes the temptation to start cross-importing Kotlin↔TypeScript.
+- **Wire format is shared with desktop, code is not.** `BOT_PUBKEY_HEX`, `botMessagePreimage`, and `canonicalJson` are duplicated in Kotlin (`Identity.kt`, `CanonicalJson.kt`) — same rules, separate implementations. Any change to the v2 wire format requires touching both sides.
+- **Enforcement is `lockNow()` + AccessibilityService, not `shutdown`.** Android apps cannot power the device off. This is a meaningful threat-model degradation from macOS, documented in `packages/android/README.md` § Threat model.
+- **No Device Owner provisioning in v4.** DeviceAdmin (revocable) + AccessibilityService (revocable) are the strongest primitives we use. Device Owner would close those gaps but requires factory-reset provisioning — outside the v4 scope.
+- **Tight accessibility-service permission scope.** `canRetrieveWindowContent="false"` in `accessibility_service_config.xml`. We only need foreground package names. If future features need on-screen text, the prompted-permission copy + README threat model must widen.
+- **Activate is gated on three preconditions:** device admin granted, friend delegation phase=`active` (password set), no unsaved schedule edits. Accessibility is recommended but not required — A1 screen-lock-only mode is a valid (weaker) fallback.
+
+### Per-milestone history → `changes/`
+
+- **A1** (`8215ba1`, 2026-05-13) — tracer-bullet scaffold. Compose UI for pairing + arming, Ed25519 identity, `DevicePolicyManager.lockNow()` during curfew, BootReceiver. Schedule editor + poll loop + app blocker all stubbed.
+- **A2** (current, 2026-05-14) — schedule editor UI, bot poll loop (sig-verifies + dispatches all v2 message kinds), AccessibilityService app blocker. Tag: `android-v0.2.0-alpha.1`. See `changes/A02-schedule-editor-poll-loop-app-blocker.md`. **Real-device validation pending.**
+
+### Paths intentionally NOT taken (in addition to v2's + v3's lists)
+
+- **Device Owner mode.** Closes the user-can-disable-DeviceAdmin and user-can-disable-accessibility gaps but needs factory-reset provisioning. Reconsider only if A3+ metal testing shows the soft enforcement is ineffective in practice.
+- **Reading window contents in the AccessibilityService.** Prompted-permission scope stays "package name only" — adding screen-text reading would change the social contract with users granting accessibility.
+- **User-managed allowlist screen in A2.** Hardcoded allowlist is intentional for alpha — wider allowlist = weaker enforcement. A3 may add a curated UI screen.
+- **Self-set lock (no friend) on Android.** Activate gates on phase=`active`. A "password-only, no Telegram" path is wired on macOS v1 but not yet in v4 — design decision for A3.
+- **Sharing Kotlin code with desktop via KMP.** Out of scope; the two worlds are small enough that re-implementing canonical-JSON in 30 LOC beats setting up a Kotlin Multiplatform module.
+
+### Open work
+
+- **A3** — Uninstall request flow + 72h emergency cooldown UI + Friend Focus port + user-managed app-blocker allowlist screen.
+- **A4** — F-Droid build reproducibility + signed release APK + `/install` bot command serves the APK to Android user-agents.
+- **Real-device validation** — every A* milestone needs metal testing before we call it done. A2 has not yet been validated on physical hardware.
 - Self-healing daemon — still carried from v1, still not blocking.
 

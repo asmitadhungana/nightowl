@@ -1,4 +1,4 @@
-# @nightowl/android — Android port (v4 alpha, tracer bullet)
+# @nightowl/android — Android port (v4 alpha)
 
 This package is the Android port of NightOwl. It pairs with the same Cloudflare
 Worker bot that the macOS and Windows builds use; the bot is OS-agnostic by
@@ -9,11 +9,14 @@ layer, and that's where Android diverges materially from desktop.
 
 - **Standalone Gradle project** under `packages/android/`. NOT part of the npm
   workspace — Kotlin/Gradle and TypeScript/npm are two different worlds and we
-  don't try to bridge them.
-- **A1 milestone (this commit):** tracer-bullet scaffold. Enough Kotlin to
-  open in Android Studio, hit Build, install an APK on a device, grant device
-  admin, enroll with the bot, and see the screen lock when curfew fires. Not
-  yet enough for a real friend to use.
+  don't try to bridge them. `package.json` workspaces verified to exclude
+  `packages/android/`, so the macOS / Windows desktop bundle is unaffected by
+  anything in this directory.
+- **A2 milestone (current):** schedule editor UI, bot poll loop, and an
+  AccessibilityService that blocks non-essential apps during curfew. Real friend
+  can pair, set a password, and the device will both re-lock its screen AND
+  bounce app launches back to the launcher during curfew hours. Uninstall flow
+  + Friend Focus + real-device validation still pending (see Roadmap).
 
 ## Architecture (Android-specific)
 
@@ -36,20 +39,20 @@ NightOwlDeviceAdminReceiver  ← user must grant via Settings → Security
 | Ed25519 identity (gen, persist, sign) | wired — Tink, raw 32-byte keys, base64 sigs, same wire format as desktop |
 | BOT_URL + bot pubkey hardcoded | wired — pubkey baked into `Identity.kt`, matches `packages/shared/src/identity.ts` |
 | `POST /desktop/enroll` | wired — `BotClient.enroll()` returns pairingId + pairCode |
-| `POST /desktop/poll` | wired — method exists but no UI surface invokes it yet |
-| `POST /desktop/request-uninstall` | sketched — method exists, no UI |
+| `POST /desktop/poll` | wired — recurring caller in `PollLoop` running inside `EnforcementService` |
+| `POST /desktop/request-uninstall` | sketched — method exists, no UI button + no 72h cooldown timer (A3) |
 | Curfew schedule storage (DataStore) | wired — `ScheduleStore` reads/writes JSON; default empty |
 | Curfew-time math (incl. overnight) | wired — `Schedule.isCurfewActive()` handles start≤end + start>end |
 | Foreground service + 60s tick | wired — `EnforcementService` |
 | `DevicePolicyManager.lockNow()` during curfew | wired |
 | Boot persistence | wired — `BootReceiver` re-arms the service on `BOOT_COMPLETED` |
 | DeviceAdmin policy XML | wired — `<force-lock />` only; no wipe, no password reset |
-| **Schedule editor UI** | **stubbed** — UI shows pair code and status; no day-by-day curfew picker yet |
-| **Bot poll loop** | **stubbed** — poll method exists, no recurring caller |
-| **Friend Focus** | **not started** — M7 desktop feature not yet ported |
-| **Uninstall request flow** | **not started** — `requestUninstall()` is callable but no UI button + no 72h cooldown UI |
-| **AccessibilityService for app blocking** | **deferred** — A2 candidate; today we only lock the screen, we don't intercept individual apps |
-| **Self-healing daemon** | **not started** — still pending from v1 |
+| Schedule editor UI | **A2 — wired.** Mon–Sun rows, presets (Night Owl / Early Bird / Weekend Flex), lock-duration chip group, save + activate, validates HH:MM format |
+| Bot poll loop | **A2 — wired.** Verifies Ed25519 sig on each `BotMessage` using canonical-JSON preimage matching desktop byte-for-byte. Dispatches all v2 message kinds. Replay defense via `lastConsumedSeq` |
+| AccessibilityService for app blocking | **A2 — wired.** `AppBlockerService` bounces non-allowlisted foreground apps back to home during curfew. Tight allowlist (system UI, Settings, dialer packages, launcher) |
+| Friend Focus | **not started** — M7 desktop feature still not ported (A3) |
+| Uninstall request flow | **not started** — A3 |
+| Self-healing daemon | **not started** — still pending from v1 |
 
 ## Threat model differences from macOS / Windows
 
@@ -114,20 +117,30 @@ it once with `gradle wrapper --gradle-version 8.7` from your machine.
 ## First-run on device
 
 1. Open the **NightOwl** app from the launcher.
-2. Tap **Grant device admin** → confirm the system permission screen. The screen
-   says "Allows NightOwl to lock the screen during curfew hours..." (from
-   `strings.xml`). Tap **Activate**.
-3. Tap **Generate pair code** → app talks to the Worker, receives an 8-char
-   pair code, shows it on screen.
-4. Hand that code to your locker via Telegram (regular DM, not the bot).
-5. Locker DMs the bot: `/pair <CODE>` then `/setpassword <PW>`.
-6. (Currently stubbed) When the schedule editor is wired up, you'd set
-   per-day curfew here. For now you can hand-write the schedule JSON to
-   DataStore via adb if you want to test enforcement.
-7. Tap **Arm enforcement service**. A persistent notification appears:
+2. Tap **Permissions → Grant** next to "Device admin". Confirm the system
+   permission screen ("Allows NightOwl to lock the screen during curfew
+   hours..." from `strings.xml`). Tap **Activate**.
+3. Tap **Permissions → Grant** next to "App blocker (Accessibility)". Settings
+   opens to the Accessibility list; find **NightOwl** and turn it on. Confirm
+   the warning. (Without this, curfew only re-locks the screen between PIN
+   unlocks — apps will still open during the gaps.)
+4. Tap **Generate pair code**. The app talks to the Worker and shows an 8-char
+   pair code in the **Friend Lock** card.
+5. Hand that code to your locker via Telegram (regular DM, not the bot).
+6. Locker DMs the bot: `/pair <CODE>` then `/setpassword <PW>`. The Android
+   poll loop pulls each message within ~30s; you'll see the pairing phase
+   advance `enrolled → awaiting_password → active` in the Status card.
+7. In the **Schedule** card, configure each day or tap a preset (Night Owl /
+   Early Bird / Weekend Flex). Pick a lock duration (1 / 3 / 7 / 14 / 30 days).
+   Tap **Save schedule** then **Activate**. Activate is gated on:
+   - Device admin granted
+   - Friend has set the password (phase = `active`)
+   - No unsaved schedule edits
+8. Tap **Arm enforcement service**. A persistent notification appears:
    "NightOwl is watching · Curfew enforcement is armed."
-8. When curfew fires, the screen locks. PIN unlock works (this isn't Device
-   Owner mode), but the lock returns within 60 seconds.
+9. When curfew fires, the screen locks. PIN unlock works (this isn't Device
+   Owner mode), but the lock returns within 60 seconds AND any non-allowlisted
+   app you launch bounces back to home.
 
 ## Distribution plan
 
@@ -144,11 +157,14 @@ it once with `gradle wrapper --gradle-version 8.7` from your machine.
 
 ## Roadmap
 
-- **A1** (this commit) — tracer-bullet scaffold. Compiles, installs, locks the
+- **A1** (`8215ba1`) — tracer-bullet scaffold. Compiles, installs, locks the
   screen during curfew. Schedule UI + poll loop + uninstall request UI all
   stubbed.
-- **A2** — Schedule editor + bot poll loop + AccessibilityService for
-  per-app blocking during curfew (the missing "kill processes" equivalent).
-- **A3** — Uninstall request flow + 72h emergency cooldown + Friend Focus.
+- **A2** (current) — Schedule editor UI + bot poll loop + AccessibilityService
+  for per-app blocking during curfew. Real friend can pair, set password,
+  and trigger active enforcement end-to-end. Real-device validation pending.
+  Tag: `android-v0.2.0-alpha.1`.
+- **A3** — Uninstall request flow + 72h emergency cooldown + Friend Focus +
+  user-managed allowlist for the app blocker.
 - **A4** — F-Droid build reproducibility + signed release APK + the
   `/install` bot command serves the APK.
