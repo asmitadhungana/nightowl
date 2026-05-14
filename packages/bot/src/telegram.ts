@@ -42,11 +42,32 @@ export interface SendMessageResult {
   result?: { message_id: number };
 }
 
+/**
+ * Inline keyboard button — Telegram supports several variants but we only need
+ * `url` (open a URL in the user's browser / Telegram client). If we ever need
+ * `switch_inline_query` (for the bot's own inline mode) or `callback_data`
+ * (for in-chat button presses), extend this union.
+ */
+export interface InlineKeyboardButton {
+  text: string;
+  url: string;
+}
+
+export interface InlineKeyboardMarkup {
+  inline_keyboard: InlineKeyboardButton[][];
+}
+
 export async function sendMessage(
   token: string,
   chatId: number | string,
   text: string,
-  opts?: { parse_mode?: 'Markdown' | 'HTML'; reply_to_message_id?: number }
+  opts?: {
+    parse_mode?: 'Markdown' | 'HTML';
+    reply_to_message_id?: number;
+    reply_markup?: InlineKeyboardMarkup;
+    /** Hides the link preview Telegram auto-generates for URLs in `text`. */
+    disable_web_page_preview?: boolean;
+  }
 ): Promise<SendMessageResult | null> {
   try {
     return (await tgCall(token, 'sendMessage', {
@@ -54,12 +75,32 @@ export async function sendMessage(
       text,
       parse_mode: opts?.parse_mode,
       reply_to_message_id: opts?.reply_to_message_id,
+      reply_markup: opts?.reply_markup,
+      disable_web_page_preview: opts?.disable_web_page_preview,
     })) as SendMessageResult;
   } catch {
     // Caller never expected this to throw before; preserve that. Return null
     // so anyone wanting message_id can detect the failure without try/catch.
     return null;
   }
+}
+
+/**
+ * Returns the bot's `@username` (without the `@`). Used to construct deep
+ * links like `https://t.me/<username>?start=<token>`.
+ *
+ * Cached in module scope — the username never changes mid-deploy and Telegram's
+ * `getMe` is rate-limited per bot. A cold call is ~80ms; subsequent calls
+ * within the same Worker isolate are free.
+ */
+let cachedBotUsername: string | null = null;
+export async function getBotUsername(token: string): Promise<string> {
+  if (cachedBotUsername) return cachedBotUsername;
+  const r = await tgCall(token, 'getMe', {}) as { ok: boolean; result?: { username?: string } };
+  const u = r.result?.username;
+  if (!u) throw new Error('getMe returned no username — is TG_BOT_TOKEN valid?');
+  cachedBotUsername = u;
+  return u;
 }
 
 export async function deleteMessage(token: string, chatId: number | string, messageId: number): Promise<void> {

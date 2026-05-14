@@ -82,6 +82,28 @@ export interface PairCodeRecord {
   expiresAt: number;
 }
 
+/**
+ * `/invite` deep-link record. Persisted under `invite:<token>` for 24h. Read on
+ * `/start <token>` arrival to personalize the install message and DM the inviter
+ * that the friend tapped through.
+ *
+ * Multi-use within TTL — Asmita generates one link, can share with multiple
+ * testers if she wants. Each arrival fires an independent inviter notification.
+ */
+export interface InviteRecord {
+  token: string;
+  /** Telegram chat ID of the inviter (the person who typed `/invite`). String to avoid JS Number precision issues with large IDs. */
+  inviterChatId: string;
+  /** Inviter's Telegram `first_name` — surfaced in the friend's welcome ("Asmita invited you"). */
+  inviterFirstName: string;
+  /** Pre-selected OS — when set, the friend sees the OS-specific install message directly instead of the picker. */
+  os: 'android' | 'windows' | 'macos' | null;
+  /** ISO timestamp of creation. */
+  createdAt: string;
+  /** ISO timestamp; defense-in-depth on top of KV's TTL. */
+  expiresAt: string;
+}
+
 /** Wire types for desktop endpoints. */
 export interface EnrollRequest {
   /** Raw 32-byte Ed25519 pubkey, hex. */

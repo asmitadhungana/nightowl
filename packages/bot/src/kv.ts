@@ -6,18 +6,21 @@
  *   pcode:<code>              { pairingId } — KV TTL = 5 min
  *   inbox:<pairingId>         InboxMessage[] — capped, FIFO
  *   ureq:<reqId>              UninstallRequest — TTL 7 days (longer than any practical lock)
+ *   invite:<token>            InviteRecord — TTL 24h
  */
 
 import type { Env } from './env.js';
-import type { InboxMessage, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
+import type { InboxMessage, InviteRecord, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
 
 const PAIR_PREFIX = 'pair:';
 const PCODE_PREFIX = 'pcode:';
 const INBOX_PREFIX = 'inbox:';
 const UREQ_PREFIX = 'ureq:';
+const INVITE_PREFIX = 'invite:';
 
 const PAIR_CODE_TTL_SECONDS = 5 * 60;
 const UREQ_TTL_SECONDS = 7 * 24 * 60 * 60;
+const INVITE_TTL_SECONDS = 24 * 60 * 60;
 const INBOX_CAP = 50;
 
 export async function getPairing(env: Env, pairingId: string): Promise<Pairing | null> {
@@ -86,3 +89,19 @@ export async function putUninstallRequest(env: Env, req: UninstallRequest): Prom
 }
 
 export const PAIR_CODE_TTL_MS = PAIR_CODE_TTL_SECONDS * 1000;
+export const INVITE_TTL_MS = INVITE_TTL_SECONDS * 1000;
+
+export async function getInvite(env: Env, token: string): Promise<InviteRecord | null> {
+  const raw = await env.NIGHTOWL_KV.get(INVITE_PREFIX + token);
+  if (!raw) return null;
+  const rec = JSON.parse(raw) as InviteRecord;
+  // Defense in depth — KV TTL is best-effort.
+  if (Date.parse(rec.expiresAt) < Date.now()) return null;
+  return rec;
+}
+
+export async function putInvite(env: Env, invite: InviteRecord): Promise<void> {
+  await env.NIGHTOWL_KV.put(INVITE_PREFIX + invite.token, JSON.stringify(invite), {
+    expirationTtl: INVITE_TTL_SECONDS,
+  });
+}

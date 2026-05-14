@@ -12,7 +12,7 @@
 
 import type { Env } from '../env.js';
 import type { TelegramUpdate } from '../telegram.js';
-import { sendMessage, deleteMessage } from '../telegram.js';
+import { sendMessage, deleteMessage, getBotUsername } from '../telegram.js';
 import {
   getPairCode,
   deletePairCode,
@@ -21,15 +21,20 @@ import {
   appendInbox,
   getUninstallRequest,
   putUninstallRequest,
+  getInvite,
+  putInvite,
 } from '../kv.js';
 import {
   bcryptHash,
   botMessagePreimage,
   botSign,
   canonicalJson,
+  generatePairCode,
 } from '../crypto.js';
-import type { InboxMessage, Pairing, UninstallRequest } from '../types.js';
+import type { InboxMessage, InviteRecord, Pairing, UninstallRequest } from '../types.js';
 import { emptyOk } from '../response.js';
+
+const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export async function handleTelegramWebhook(req: Request, env: Env, secret: string): Promise<Response> {
   if (secret !== env.TG_WEBHOOK_SECRET) {
@@ -53,12 +58,25 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
   try {
     if (text.startsWith('/start')) {
       // /start CODE  ← deep link form (t.me/<bot>?start=CODE puts CODE here)
+      // CODE may be:
+      //   - an 8-char pair code (legacy shortcut to /pair)
+      //   - an `inv_<8-char>` invite token (A4+: friend tapped an /invite link)
       const arg = text.slice('/start'.length).trim();
-      if (arg && /^[A-Z2-9]{8}$/.test(arg)) {
+      if (arg.startsWith('inv_')) {
+        await handleInviteArrival(env, msg.from.first_name, chatId, arg);
+      } else if (arg && /^[A-Z2-9]{8}$/.test(arg)) {
         await handlePair(env, msg.from.id, msg.from.first_name, msg.message_id, chatId, arg);
       } else {
         await sendMessage(env.TG_BOT_TOKEN, chatId, START_MESSAGE);
       }
+    } else if (text.startsWith('/invite')) {
+      const arg = text.slice('/invite'.length).trim().toLowerCase();
+      const os: 'android' | 'windows' | 'macos' | null =
+        arg === 'android' ? 'android' :
+        arg === 'windows' ? 'windows' :
+        arg === 'macos' || arg === 'mac' ? 'macos' :
+        null;
+      await handleInvite(env, chatId, msg.from.first_name, os);
     } else if (text.startsWith('/pair')) {
       const code = text.slice('/pair'.length).trim().toUpperCase().replace(/-/g, '');
       if (!/^[A-Z2-9]{8}$/.test(code)) {
@@ -119,6 +137,7 @@ That's it. Your friend's lock activates the moment I forward the password.`;
 
 const HELP_MESSAGE = `Commands:
 /install             — download NightOwl for your machine
+/invite [OS]         — generate a 1-tap invite link to send a friend. Optional OS (android|windows|macos) pre-picks their install message.
 /pair <CODE>         — claim a pair code your friend gave you
 /setpassword <PW>    — set their lock password (sent over Telegram, deleted immediately)
 /status              — show your active pairings
@@ -496,3 +515,120 @@ If you don't reply, the timer just runs out on its own — short focus sessions 
   const msgId = (r as { result?: { message_id?: number } } | null)?.result?.message_id ?? null;
   return msgId;
 }
+
+// ---------------------------------------------------------------------------
+// /invite — deep-link onboarding (A4+)
+//
+// Telegram's anti-spam rules forbid bots from DMing users they haven't heard
+// from. The workaround is a shareable deep link `t.me/<bot>?start=inv_<token>`.
+// When the friend taps it, Telegram opens the bot for them and we see `/start
+// inv_<token>` as the first message — at which point we know who invited them
+// (from the token's KV record) and can personalize the install message.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an invite token + serve the inviter a shareable `t.me/<bot>?start=...`
+ * deep link. Optional `os` pre-selects the install message the friend sees on
+ * arrival — `/invite android` is the friend-coordination shortcut.
+ */
+async function handleInvite(
+  env: Env,
+  chatId: number,
+  firstName: string,
+  os: 'android' | 'windows' | 'macos' | null
+): Promise<void> {
+  const token = `inv_${generatePairCode()}`;
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+  const invite: InviteRecord = {
+    token,
+    inviterChatId: String(chatId),
+    inviterFirstName: firstName,
+    os,
+    createdAt: new Date().toISOString(),
+    expiresAt,
+  };
+  await putInvite(env, invite);
+
+  // getBotUsername hits Telegram's `getMe` on cold start; cached afterwards.
+  // Worst case the user sees a ~80ms delay on first /invite per Worker isolate.
+  const botUsername = await getBotUsername(env.TG_BOT_TOKEN);
+  const deepLink = `https://t.me/${botUsername}?start=${token}`;
+  const sharePrefill = os
+    ? `Hey — testing NightOwl on Android together. Tap this and I'll be your locker:`
+    : `Hey — testing NightOwl together. Tap this for install steps:`;
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(deepLink)}&text=${encodeURIComponent(sharePrefill)}`;
+
+  const osLine = os
+    ? `\nPre-selected OS: *${os}*. They won't see the picker — just the ${os} install steps.\n`
+    : `\nThey'll see all 3 OS options on arrival. Use \`/invite android\` (or \`windows\`/\`macos\`) to pre-pick.\n`;
+
+  const replyText = `🦉 *Invite link ready.* Share this with your friend:
+
+\`${deepLink}\`
+${osLine}
+*How it goes:*
+1. Tap *Share* below → pick your friend from Telegram → send.
+2. They tap the link — Telegram opens me and I greet them by name with install steps.
+3. After they install NightOwl + tap *Generate pair code*, they send you the 8-char code over regular Telegram.
+4. You DM me \`/pair <CODE>\` then \`/setpassword <PW>\`. Done.
+
+I'll ping you here when they tap the link, so you know they've started. The link expires in 24h; \`/invite\` again anytime.`;
+
+  await sendMessage(env.TG_BOT_TOKEN, chatId, replyText, {
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+    reply_markup: {
+      inline_keyboard: [[{ text: '↗️  Share with a friend', url: shareUrl }]],
+    },
+  });
+}
+
+/**
+ * Handle `/start inv_<token>` — the friend's first interaction with the bot.
+ *
+ * We look up the invite record, serve the OS-specific (or picker) install
+ * message with a personalized welcome line, then DM the inviter that the friend
+ * tapped through. The inviter is the only one who can DM the bot proactively
+ * because they've already messaged us via /invite (Telegram anti-spam rule).
+ */
+async function handleInviteArrival(
+  env: Env,
+  friendFirstName: string,
+  friendChatId: number,
+  token: string
+): Promise<void> {
+  const invite = await getInvite(env, token);
+  if (!invite) {
+    await sendMessage(
+      env.TG_BOT_TOKEN,
+      friendChatId,
+      "🦉 Hi! This invite link has expired or wasn't valid. Ask your friend to send a fresh one — they can generate it with `/invite` in their own DM with me."
+    );
+    return;
+  }
+
+  // Welcome + OS-specific install message.
+  const installMsg =
+    invite.os === 'android' ? INSTALL_ANDROID_MESSAGE :
+    invite.os === 'windows' ? INSTALL_WINDOWS_MESSAGE :
+    invite.os === 'macos' ? INSTALL_MACOS_MESSAGE :
+    INSTALL_PICKER_MESSAGE;
+
+  const welcome = `🦉 Hi ${friendFirstName}! *${invite.inviterFirstName}* invited you to test NightOwl with them.\n\n`;
+  await sendMessage(env.TG_BOT_TOKEN, friendChatId, welcome + installMsg, {
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+  });
+
+  // Ping the inviter. Telegram allows this because they DM'd us earlier (via
+  // /invite), so the chat already exists.
+  const inviterPing = `📲 *${friendFirstName}* just tapped your invite link. They're getting ${invite.os ? `*${invite.os}*` : 'the OS picker'} install steps now.
+
+Once they install NightOwl and tap *Generate pair code*, they'll send you the 8-char code over regular Telegram. Then DM me:
+\`/pair <CODE>\`
+\`/setpassword <PW>\``;
+  await sendMessage(env.TG_BOT_TOKEN, invite.inviterChatId, inviterPing, {
+    parse_mode: 'Markdown',
+  });
+}
+
