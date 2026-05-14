@@ -37,11 +37,18 @@ export const BOT_PUBKEY_HEX = 'c67a4785231869d571763e2f9f0a9c8a0f8c7480ffbe70a56
 /**
  * Bot base URL.
  *
- * NIGHTOWL_BOT_URL overrides at runtime so the same binary can hit a local
- * wrangler-dev instance or a self-hosted Worker. The default points at the
- * project's hosted Worker; for v2.0.0-alpha this is unset until we deploy.
+ * Defaults to the project's hosted Worker so packaged macOS / Windows builds
+ * "just work" for end users out of the box. NIGHTOWL_BOT_URL overrides at
+ * runtime so a self-hoster or a developer running `wrangler dev` can point
+ * the same binary at their own Worker without rebuilding.
+ *
+ * Rotating this URL is a coordinated event — same shape as rotating the bot
+ * pubkey above. If we ever cut over to a new hosted Worker, we'd ship a new
+ * desktop release with the new URL, leave the old Worker up long enough for
+ * existing installs to migrate, then retire it.
  */
-export const BOT_URL: string = process.env.NIGHTOWL_BOT_URL || 'http://localhost:8787';
+export const BOT_URL: string =
+  process.env.NIGHTOWL_BOT_URL || 'https://nightowl-bot.asmee-dh-work.workers.dev';
 
 /** SPKI DER prefix for an Ed25519 public key (12 bytes), followed by the 32-byte raw key. */
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');

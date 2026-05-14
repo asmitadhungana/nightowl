@@ -215,7 +215,7 @@ Refused options with reasons. If a future request asks for one of these, surface
 
 - Set `TG_BOT_TOKEN` Worker secret and run the first real-Telegram E2E (see `RUNBOOK.md §8`).
 - Bot integration tests — `packages/bot` currently has only a placeholder test script.
-- Bake a hosted Worker URL into `BOT_URL` once the self-hosting story is settled (M6 added a packaged-build startup warning as a soft alternative).
+- ~~Bake a hosted Worker URL into `BOT_URL`~~ — done in v2.0.0 polish. `packages/shared/src/identity.ts:BOT_URL` defaults to `https://nightowl-bot.asmee-dh-work.workers.dev`; self-hosters override via `NIGHTOWL_BOT_URL`. The packaged-build localhost warning in `main/index.ts` is retained for stale-env-var detection.
 - Self-healing daemon (carried over from v1 — see "Critical #5" above; not blocking v2).
 
 ---

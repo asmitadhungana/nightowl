@@ -348,6 +348,34 @@ function showFriendlockModal(state) {
   const overlay = document.getElementById('friendlock-overlay');
   overlay.classList.remove('hidden');
   showFriendlockState(state);
+  // Backfill the bot-warning chip from whatever the orchestrator already
+  // recorded — drops can happen before the modal is opened (e.g. during a
+  // background poll while the user was on the edit screen).
+  refreshBotWarningChip();
+}
+
+/**
+ * Render the persistent bot-warning chip (id="friendlock-bot-warning") from
+ * the orchestrator's lastBotWarning record. Called on modal open + whenever
+ * a new drop event fires. Hides the chip until the first drop in this
+ * process lifetime.
+ */
+async function refreshBotWarningChip() {
+  const el = document.getElementById('friendlock-bot-warning');
+  if (!el) return;
+  try {
+    const w = await window.nightowl.friendlock.getLastBotWarning();
+    if (!w) {
+      el.classList.add('hidden');
+      el.textContent = '';
+      return;
+    }
+    const ago = Math.max(0, Math.round((Date.now() - w.at) / 1000));
+    el.textContent = `⚠ ${w.reason}  (${ago}s ago)`;
+    el.classList.remove('hidden');
+  } catch (_) {
+    /* getLastBotWarning is best-effort — silently ignore IPC failure */
+  }
 }
 
 function hideFriendlockModal() {
@@ -500,11 +528,17 @@ function subscribeFriendlockEvents() {
       ['a','b','c'].forEach(s => {
         const el = document.getElementById(`friendlock-state-${s}`);
         if (el && !el.classList.contains('hidden')) {
-          showFriendlockError(s, 'Bot unreachable. Check NIGHTOWL_BOT_URL is set to your deployed Worker URL (see RUNBOOK.md §8) or your internet, then try again.');
+          showFriendlockError(s, 'Bot unreachable. Check your internet or contact the maintainer — the hosted Worker may be down. (see RUNBOOK.md §8)');
         }
       });
     })
   );
+
+  if (window.nightowl.friendlock.onBotWarning) {
+    friendlockUnsubscribers.push(
+      window.nightowl.friendlock.onBotWarning(() => refreshBotWarningChip())
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

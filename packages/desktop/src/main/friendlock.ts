@@ -112,18 +112,49 @@ const BACKOFF_MAX_MS = 300_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /** Mutable state held in this module. */
+interface BotWarning {
+  /** Epoch ms when the drop happened. */
+  at: number;
+  /** Short, user-facing reason — surfaced verbatim in the renderer. Keep concise. */
+  reason: string;
+}
+
 interface State {
   pollTimer: NodeJS.Timeout | null;
   currentBackoffMs: number;
   /** Wallclock timestamp of the last bot-unreachable signal we surfaced to UI. */
   lastUnreachableAt: number | null;
+  /**
+   * The most recent bot-message drop reason (bad sig, replay, malformed, etc.).
+   * Surfaced to the renderer so friend-coordination debugging isn't blind —
+   * without this, all 12 silent-drop paths in this file would log to stderr
+   * and leave the user staring at a "stuck in awaiting_password" wizard with
+   * no signal as to why. Null until the first drop in this process lifetime.
+   */
+  lastBotWarning: BotWarning | null;
 }
 
 const state: State = {
   pollTimer: null,
   currentBackoffMs: BACKOFF_START_MS,
   lastUnreachableAt: null,
+  lastBotWarning: null,
 };
+
+/**
+ * Record a bot-message drop reason and emit it to the renderer. Also writes
+ * to stderr so the existing log story is unchanged. Callers should keep
+ * reasons short and human-readable — the renderer renders them verbatim.
+ */
+function recordBotWarning(reason: string): void {
+  state.lastBotWarning = { at: Date.now(), reason };
+  emitBotWarning(state.lastBotWarning);
+}
+
+/** Snapshot for IPC. Cheap; safe per UI tick. */
+export function getLastBotWarning(): BotWarning | null {
+  return state.lastBotWarning;
+}
 
 /** Public summary of delegation state for the UI. */
 export interface DelegationStatus {
@@ -331,10 +362,12 @@ async function handleInboxMessage(msg: PollMessage): Promise<void> {
   const schedule = loadSchedule();
   if (!schedule.delegation) {
     console.warn('[friendlock] inbox message arrived but no delegation; dropping');
+    recordBotWarning('Inbox message arrived but no delegation is active — dropped.');
     return;
   }
   if (msg.seq <= schedule.delegation.lastConsumedSeq) {
     console.warn('[friendlock] dropping replayed/old seq', msg.seq, '<=', schedule.delegation.lastConsumedSeq);
+    recordBotWarning(`Replayed bot message dropped (seq ${msg.seq} ≤ lastConsumed ${schedule.delegation.lastConsumedSeq}).`);
     return;
   }
 
@@ -343,6 +376,7 @@ async function handleInboxMessage(msg: PollMessage): Promise<void> {
   const preimage = botMessagePreimage(schedule.delegation.pairingId, msg.seq, msg.kind, msg.payload);
   if (!verifyBotSignature(preimage, msg.sig)) {
     console.warn('[friendlock] dropping message with bad signature, kind=', msg.kind, 'seq=', msg.seq);
+    recordBotWarning(`Bot message with bad signature dropped (kind=${msg.kind}, seq=${msg.seq}). Most likely cause: a desktop↔bot version mismatch on canonical-JSON.`);
     return;
   }
 
@@ -364,6 +398,7 @@ async function handleInboxMessage(msg: PollMessage): Promise<void> {
       break;
     default:
       console.warn('[friendlock] unknown message kind, dropping');
+      recordBotWarning(`Unknown bot message kind dropped: "${(msg as { kind?: string }).kind ?? '?'}". Bot may be ahead of this desktop build.`);
       // Bump consumed seq anyway so we don't refetch it forever.
       bumpConsumedSeq(msg.seq);
   }
@@ -400,16 +435,19 @@ async function dispatchPasswordHash(
 
   if (!payload.hash || typeof payload.hash !== 'string') {
     console.warn('[friendlock] password_hash missing hash field; dropping');
+    recordBotWarning('Friend set a password but the bot message arrived malformed (no hash). Ask your friend to /setpassword again.');
     bumpConsumedSeq(seq);
     return;
   }
   if (!schedule.lockPeriodDays) {
     console.warn('[friendlock] password_hash arrived but no lockPeriodDays set; dropping');
+    recordBotWarning('Friend set a password but the schedule has no lock duration — set a lock period first, then re-pair.');
     bumpConsumedSeq(seq);
     return;
   }
   if (isLocked(schedule)) {
     console.warn('[friendlock] password_hash arrived but already locked; dropping');
+    recordBotWarning('Duplicate password_hash arrived — your lock is already active. Safe to ignore.');
     bumpConsumedSeq(seq);
     return;
   }
@@ -462,6 +500,7 @@ async function dispatchUninstallDecision(
 
   if (!payload.reqId || (payload.verdict !== 'approved' && payload.verdict !== 'denied')) {
     console.warn('[friendlock] uninstall_decision malformed; dropping');
+    recordBotWarning('Friend acted on your uninstall request but the response was malformed — ask them to re-send /approve or /deny.');
     bumpConsumedSeq(seq);
     return;
   }
@@ -470,6 +509,7 @@ async function dispatchUninstallDecision(
     // request we no longer care about). Still record it — auditability — but
     // don't promote to "current."
     console.warn('[friendlock] uninstall_decision for a non-pending reqId; recording but not acting');
+    recordBotWarning('Friend approved an old uninstall request that you already cancelled. Decision recorded but no action taken.');
     schedule.delegation.lastConsumedSeq = seq;
     saveSchedule(schedule);
     bumpConsumedSeq(seq);
@@ -503,17 +543,20 @@ async function dispatchFocusReleaseDecision(
   const focus = loadFocus();
   if (!payload.reqId || (payload.verdict !== 'approved' && payload.verdict !== 'denied')) {
     console.warn('[friendlock] focus_release_decision malformed; dropping');
+    recordBotWarning('Friend acted on your focus-release request but the response was malformed — ask them to re-send /approve or /deny.');
     bumpConsumedSeq(seq);
     return;
   }
   // No active focus, or focus already ended/expired — record seq + drop.
   if (!focus || !focus.active) {
     console.warn('[friendlock] focus_release_decision arrived but no active focus session; dropping');
+    recordBotWarning('Focus-release decision arrived but no active focus session — likely the timer already elapsed.');
     bumpConsumedSeq(seq);
     return;
   }
   if (focus.pendingReleaseReqId !== payload.reqId) {
     console.warn('[friendlock] focus_release_decision for a non-pending reqId; ignoring');
+    recordBotWarning('Friend approved an old focus-release request that you already cancelled. No action taken.');
     bumpConsumedSeq(seq);
     return;
   }
@@ -840,6 +883,12 @@ function emitFriendPaired(friendName: string): void {
 function emitBotUnreachable(sinceMs: number): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('friendlock:botUnreachable', { since: sinceMs });
+  }
+}
+
+function emitBotWarning(w: BotWarning): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('friendlock:botWarning', w);
   }
 }
 

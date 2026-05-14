@@ -184,7 +184,33 @@ After this, the daemon WILL run `halt -q` when curfew fires. There is no inline 
 
 ## 8. v2 Friend Lock — first-time bot bring-up (alpha)
 
-The Cloudflare Worker for Friend Lock is deployed (3 deployments visible via `npx wrangler deployments list` from `packages/bot/`) but **`TG_BOT_TOKEN` is not yet set as a secret**. Without it the bot can receive Telegram updates but cannot reply or `deleteMessage`. This is the only manual step blocking an end-to-end pairing test.
+**Status as of v2.0.0:** the Cloudflare Worker is deployed at `https://nightowl-bot.asmee-dh-work.workers.dev` and all three secrets are set (`TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET`, `BOT_ED25519_PRIVKEY` — confirm with `npx wrangler secret list` from `packages/bot/`). The instructions below stay here for self-hosters and for re-deploys; if you're just running the app, **skip to §8.1 Pre-flight checks** and then §8.3 to drive a session with your friend.
+
+### 8.1 Pre-flight checks (run before every friend-coordination session)
+
+```bash
+# 1. Worker is alive
+curl -sS https://nightowl-bot.asmee-dh-work.workers.dev/healthz
+# expect: ok
+
+# 2. Telegram webhook is pointed at the Worker. Substitute your bot token from
+#    @BotFather (NEVER paste this in shell history — store in a file, then delete):
+TG_TOKEN=$(cat ~/.nightowl-bot-token)   # or wherever you keep it
+curl -sS "https://api.telegram.org/bot$TG_TOKEN/getWebhookInfo" | python3 -m json.tool
+# expect: "url" field matches the Worker /tg/webhook/<secret> path,
+#         "pending_update_count" near 0, "last_error_date" absent or stale
+
+# 3. (Optional) Tail live Worker logs while you test:
+#    from a second terminal in packages/bot/
+npx wrangler tail
+# Anything that hits the Worker — /healthz, /tg/webhook, /desktop/* — shows up here.
+```
+
+If any of the three fail, fix before running the friend session — silent failures during pairing are the most confusing UX surface in v2.
+
+### 8.2 Self-hoster setup (first-time bot deploy)
+
+If you're standing up your own Worker rather than using the hosted one above, you need to:
 
 ```bash
 cd packages/bot
@@ -237,9 +263,33 @@ Once the bot replies to `/help`, the desktop side can be brought up:
 NIGHTOWL_BOT_URL=https://<WORKER_URL> npm run dev:desktop
 ```
 
+If you're using the **hosted Worker** (the default since v2.0.0), `NIGHTOWL_BOT_URL` is unnecessary — `shared/src/identity.ts` bakes the URL in. Set it only when pointing at a local `wrangler dev` or a self-hosted Worker.
+
+### 8.3 Friend-coordination session (driving an actual pair → setpassword → uninstall flow)
+
 In the renderer: switch the lock-mode toggle to **Friend**, click **Generate Pair Code**, hand the 8-char code to a friend (or yourself in a second Telegram account), have them DM the bot `/pair <CODE>` then `/setpassword <PW>`. Within ~10 seconds the desktop should transition `enrolled → paired → awaiting_password → active` and the lock activates.
 
-If the desktop logs `bot unreachable`: check `NIGHTOWL_BOT_URL` is set, `npx wrangler tail` from `packages/bot/` for live logs, and verify `/healthz` returns `ok` (`curl https://<WORKER_URL>/healthz`).
+**Diagnostic signals during the session:**
+
+- The pairing modal now surfaces a `⚠ Last warning` chip whenever a bot message is dropped (bad signature, replay, malformed payload). If the pairing seems stuck in `awaiting_password`, look at the chip first — it tells you whether the desktop is hearing the bot at all.
+- `npx wrangler tail` from `packages/bot/` shows live Worker logs including each `/desktop/poll` hit. Useful for cross-checking when the chip says something dropped.
+- The Telegram client shows the friend's `/setpassword` got `✓ Password sent` — that confirms the bot accepted it. Anything past that point is a desktop-side issue.
+
+**If the desktop logs `bot unreachable`:** check internet, then `curl /healthz` per §8.1. If the hosted Worker is the issue (rare — it's a Cloudflare Worker, so uptime is near 100%), the maintainer needs to redeploy.
+
+### 8.4 Exercising the uninstall path safely
+
+The uninstall flow (Ask friend → /approve → Uninstall now) actually **uninstalls the daemon and tears down the active lock.** For dry-run testing during friend coordination, set `NIGHTOWL_UNINSTALL_DRY_RUN=1` in the desktop's environment before launching:
+
+```bash
+NIGHTOWL_UNINSTALL_DRY_RUN=1 npm run dev:desktop
+# or, in a packaged build:
+NIGHTOWL_UNINSTALL_DRY_RUN=1 open /Applications/NightOwl.app
+```
+
+With this set, the **Uninstall now** button still walks the entire IPC + delegation-clearing path (so you can verify the friend-approval flow end-to-end), but `daemon:uninstall` short-circuits to `ok` instead of actually invoking launchd. The active schedule lock stays intact. Use this for the first dry-run with your friend; clear the env var when you want a real install/uninstall cycle.
+
+`NIGHTOWL_UNINSTALL_DRY_RUN` is the sibling of `NIGHTOWL_DRY_RUN`, which gates the daemon's `halt` action — same idea, different layer.
 
 ---
 

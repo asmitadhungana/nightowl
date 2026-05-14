@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('nightowl', {
     enroll: () => ipcRenderer.invoke('friendlock:enroll'),
     cancelPairing: () => ipcRenderer.invoke('friendlock:cancelPairing'),
     getStatus: () => ipcRenderer.invoke('friendlock:getStatus'),
+    getLastBotWarning: () => ipcRenderer.invoke('friendlock:getLastBotWarning'),
     requestUninstall: () => ipcRenderer.invoke('friendlock:requestUninstall'),
     cancelPendingUninstallRequest: () => ipcRenderer.invoke('friendlock:cancelPendingUninstallRequest'),
     startEmergencyCooldown: () => ipcRenderer.invoke('friendlock:startEmergencyCooldown'),
@@ -63,6 +64,11 @@ contextBridge.exposeInMainWorld('nightowl', {
       const handler = (_e, p) => cb(p);
       ipcRenderer.on('friendlock:botUnreachable', handler);
       return () => ipcRenderer.removeListener('friendlock:botUnreachable', handler);
+    },
+    onBotWarning: (cb) => {
+      const handler = (_e, p) => cb(p);
+      ipcRenderer.on('friendlock:botWarning', handler);
+      return () => ipcRenderer.removeListener('friendlock:botWarning', handler);
     },
     onUninstallDecision: (cb) => {
       const handler = (_e, p) => cb(p);

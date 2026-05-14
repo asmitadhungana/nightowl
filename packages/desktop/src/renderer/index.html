@@ -200,6 +200,12 @@
   <!-- Friend Lock Modal — 3 states: A=intro, B=code-shown, C=awaiting-password -->
   <div id="friendlock-overlay" class="modal-overlay hidden">
     <div class="modal friendlock-modal">
+      <!--
+        Single bot-warning chip visible across all three modal states.
+        Populated from friendlock.lastBotWarning whenever a message is dropped
+        (bad sig, replay, malformed). Stays hidden until the first drop.
+      -->
+      <div id="friendlock-bot-warning" class="muted hidden" style="font-size: 12px; padding: 8px 12px; border-radius: 6px; background: rgba(255, 200, 0, 0.08); border: 1px solid rgba(255, 200, 0, 0.25); margin-bottom: 12px;"></div>
 
       <!-- State A: intro / generate -->
       <div id="friendlock-state-a" class="friendlock-state">
