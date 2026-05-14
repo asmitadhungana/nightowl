@@ -99,6 +99,28 @@ private fun Home(padding: PaddingValues) {
             onSave = vm::saveSchedule,
             onActivate = vm::activateSchedule,
         )
+        UninstallCard(
+            state = state,
+            onRequestUninstall = vm::requestUninstall,
+            onCancelPending = vm::cancelPendingUninstallRequest,
+            onStartCooldown = vm::startEmergencyCooldown,
+            onSoftUninstall = vm::softUninstall,
+        )
+        FocusCard(
+            state = state,
+            onStart = vm::startFocus,
+            onRequestRelease = vm::requestFocusRelease,
+            onCancelPending = vm::cancelPendingFocusRelease,
+            onEndEarly = vm::endFocusEarly,
+        )
+        if (state.accessibilityActive) {
+            AllowlistCard(
+                state = state,
+                onInputChange = vm::setAllowlistInput,
+                onAdd = vm::addAllowlistEntry,
+                onRemove = vm::removeAllowlistEntry,
+            )
+        }
         EnforcementCard(onArm = { EnforcementService.start(ctx) })
 
         if (state.lastError != null || state.lastMessage != null) {

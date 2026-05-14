@@ -60,9 +60,23 @@ data class DelegationState(
     /** bcrypt hash of the lock password — set when [phase] flips to `active`. Never plaintext. */
     val passwordHash: String? = null,
     val passwordSetAt: String? = null,
-    /** Most recent uninstall verdict (A3 uses this fully). Persisted so a restart doesn't lose it. */
+    /**
+     * UUID of the in-flight uninstall request awaiting friend approval. Null whenever
+     * no request is pending or the most recent one is decided. Cleared on
+     * `cancelPendingUninstallRequest` or when the matching `uninstall_decision`
+     * arrives via the poll loop.
+     */
+    val pendingUninstallReqId: String? = null,
+    /**
+     * ISO timestamp when the user started the 72h emergency uninstall cooldown.
+     * Null if cooldown is not active. **Once started, cannot be cancelled** — that
+     * keeps the safety net from being defanged by a hostile-friend scenario (see
+     * CLAUDE.md § v2 "Load-bearing invariants").
+     */
+    val emergencyUninstallStartedAt: String? = null,
+    /** Most recent uninstall verdict. Persisted so a restart doesn't lose it. */
     val lastUninstallDecision: UninstallVerdict? = null,
-    /** Most recent focus-release verdict (A3 uses this fully). */
+    /** Most recent focus-release verdict. */
     val lastFocusReleaseDecision: UninstallVerdict? = null,
     val friendRevokedAt: String? = null,
 )
@@ -74,6 +88,13 @@ data class Schedule(
     val days: Map<String, DaySchedule> = emptyMap(),
     val timezone: String = "UTC",
     val delegation: DelegationState? = null,
+    /**
+     * User-managed additions to [AppBlockerService.HARDCODED_ALLOWLIST]. The defaults
+     * (system UI, Settings, dialer, launcher) are NOT in this list — they're always
+     * allowed. This list only adds; it cannot subtract from defaults. Empty by
+     * default; user populates from the Allowlist card in the UI.
+     */
+    val userAllowlist: List<String> = emptyList(),
 ) {
     /**
      * Naive curfew check using the device's current wall clock. Overnight windows

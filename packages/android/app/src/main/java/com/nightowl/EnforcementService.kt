@@ -59,7 +59,8 @@ class EnforcementService : Service() {
         val identity = Identity.loadOrCreate(applicationContext)
         val client = BotClient(identity)
         val store = ScheduleStore(applicationContext)
-        PollLoop(client, store).runForever()
+        val focusStore = FocusStore(applicationContext)
+        PollLoop(client, store, focusStore).runForever()
     }
 
     override fun onDestroy() {
@@ -71,22 +72,39 @@ class EnforcementService : Service() {
 
     private suspend fun tickLoop() {
         val store = ScheduleStore(applicationContext)
+        val focusStore = FocusStore(applicationContext)
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminComponent = ComponentName(applicationContext, NightOwlDeviceAdminReceiver::class.java)
 
         while (true) {
             val sched = store.schedule.first()
-            if (sched.active && dpm.isAdminActive(adminComponent)) {
-                val now = LocalDateTime.now(ZoneId.of(sched.timezone.ifBlank { "UTC" }))
-                val dayKey = now.dayOfWeek.name.lowercase()
-                val hhmm = "%02d:%02d".format(now.hour, now.minute)
-                if (sched.isCurfewActive(dayKey, hhmm)) {
-                    runCatching { dpm.lockNow() }
-                }
+            val focus = focusStore.session.first()
+
+            // Auto-clear an elapsed focus session so the user's UI reflects reality
+            // without requiring them to open the app. lockNow() during the cleanup
+            // tick is harmless — locks return to their normal cadence after this.
+            if (focus.active && focus.isElapsed()) {
+                focusStore.update { FocusSession() }
+            }
+
+            val curfewing = sched.active && sched.isCurfewActive(
+                dayKey = LocalDateTime.now(zoneOf(sched.timezone)).dayOfWeek.name.lowercase(),
+                nowHHMM = "%02d:%02d".format(
+                    LocalDateTime.now(zoneOf(sched.timezone)).hour,
+                    LocalDateTime.now(zoneOf(sched.timezone)).minute,
+                ),
+            )
+            val focusing = focus.active && !focus.isElapsed()
+
+            if ((curfewing || focusing) && dpm.isAdminActive(adminComponent)) {
+                runCatching { dpm.lockNow() }
             }
             delay(TICK_INTERVAL_MS)
         }
     }
+
+    private fun zoneOf(tz: String): ZoneId =
+        runCatching { ZoneId.of(tz.ifBlank { "UTC" }) }.getOrDefault(ZoneId.of("UTC"))
 
     private fun buildNotification(): android.app.Notification {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

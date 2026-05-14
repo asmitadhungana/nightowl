@@ -71,6 +71,30 @@ class BotClient(
         json.parseToJsonElement(postRaw("/desktop/request-uninstall", json.encodeToString(body)))
     }
 
+    /**
+     * Ask the bot to DM the paired friend asking them to /approve early-release
+     * of the user's active focus session. Mirror of `POST /desktop/request-focus-release`
+     * on the desktop side; same signature preimage (`request_focus_release|...`).
+     */
+    suspend fun requestFocusRelease(
+        pairingId: String,
+        reqId: String,
+        focusMinutes: Int,
+        focusStartedAt: String,
+    ): JsonElement = withContext(Dispatchers.IO) {
+        val ts = System.currentTimeMillis()
+        val preimage = "request_focus_release|$pairingId|$reqId|$ts"
+        val body = FocusReleaseBody(
+            pairingId = pairingId,
+            reqId = reqId,
+            focusMinutes = focusMinutes,
+            focusStartedAt = focusStartedAt,
+            ts = ts,
+            sig = identity.sign(preimage),
+        )
+        json.parseToJsonElement(postRaw("/desktop/request-focus-release", json.encodeToString(body)))
+    }
+
     private inline fun <reified T> post(path: String, body: String): T {
         val raw = postRaw(path, body)
         return json.decodeFromString<T>(raw)
@@ -111,3 +135,13 @@ data class BotMessage(val seq: Long, val kind: String, val payload: JsonElement,
 
 @Serializable
 private data class UninstallBody(val pairingId: String, val reqId: String, val ts: Long, val sig: String)
+
+@Serializable
+private data class FocusReleaseBody(
+    val pairingId: String,
+    val reqId: String,
+    val focusMinutes: Int,
+    val focusStartedAt: String,
+    val ts: Long,
+    val sig: String,
+)

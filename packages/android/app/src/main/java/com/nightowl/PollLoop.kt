@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 class PollLoop(
     private val client: BotClient,
     private val store: ScheduleStore,
+    private val focusStore: FocusStore? = null,
 ) {
     suspend fun runForever() {
         while (true) {
@@ -134,8 +135,13 @@ class PollLoop(
         val decidedAt = payload["decidedAt"]?.jsonPrimitive?.content ?: nowIso()
         store.update { sched ->
             val d = sched.delegation ?: return@update sched
+            // Clear `pendingUninstallReqId` iff this decision is FOR the in-flight
+            // request. Out-of-band approvals (e.g. friend approves an already-cancelled
+            // reqId) still record the verdict — same desktop semantics from M6.
+            val clearedPending = if (d.pendingUninstallReqId == reqId) null else d.pendingUninstallReqId
             sched.copy(
                 delegation = d.copy(
+                    pendingUninstallReqId = clearedPending,
                     lastUninstallDecision = UninstallVerdict(reqId, verdict, decidedAt),
                     lastConsumedSeq = seq,
                 ),
@@ -147,6 +153,9 @@ class PollLoop(
         val reqId = payload["reqId"]?.jsonPrimitive?.content ?: return advance(seq)
         val verdict = payload["verdict"]?.jsonPrimitive?.content ?: return advance(seq)
         val decidedAt = payload["decidedAt"]?.jsonPrimitive?.content ?: nowIso()
+        // Persist on delegation as a historical record (same as desktop), AND on the
+        // focus session so focusReleaseGate() can see it. Focus state lives in its
+        // own store so the daemon can read it independently of the schedule.
         store.update { sched ->
             val d = sched.delegation ?: return@update sched
             sched.copy(
@@ -154,6 +163,14 @@ class PollLoop(
                     lastFocusReleaseDecision = UninstallVerdict(reqId, verdict, decidedAt),
                     lastConsumedSeq = seq,
                 ),
+            )
+        }
+        focusStore?.update { focus ->
+            if (!focus.active) return@update focus
+            val clearedPending = if (focus.pendingReleaseReqId == reqId) null else focus.pendingReleaseReqId
+            focus.copy(
+                pendingReleaseReqId = clearedPending,
+                lastReleaseDecision = UninstallVerdict(reqId, verdict, decidedAt),
             )
         }
     }

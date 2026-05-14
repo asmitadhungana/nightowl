@@ -12,11 +12,12 @@ layer, and that's where Android diverges materially from desktop.
   don't try to bridge them. `package.json` workspaces verified to exclude
   `packages/android/`, so the macOS / Windows desktop bundle is unaffected by
   anything in this directory.
-- **A2 milestone (current):** schedule editor UI, bot poll loop, and an
-  AccessibilityService that blocks non-essential apps during curfew. Real friend
-  can pair, set a password, and the device will both re-lock its screen AND
-  bounce app launches back to the launcher during curfew hours. Uninstall flow
-  + Friend Focus + real-device validation still pending (see Roadmap).
+- **A3 milestone (current):** schedule editor + bot poll + accessibility blocker
+  (from A2), plus uninstall request flow + 72h non-cancellable emergency cooldown +
+  Friend Focus (solo + friend-gated) + user-managed allowlist. Real friend can
+  `/approve` an uninstall request end-to-end, the cooldown safety net is
+  exercisable, and focus sessions work. Real-device validation still pending
+  (see Roadmap).
 
 ## Architecture (Android-specific)
 
@@ -40,7 +41,10 @@ NightOwlDeviceAdminReceiver  ← user must grant via Settings → Security
 | BOT_URL + bot pubkey hardcoded | wired — pubkey baked into `Identity.kt`, matches `packages/shared/src/identity.ts` |
 | `POST /desktop/enroll` | wired — `BotClient.enroll()` returns pairingId + pairCode |
 | `POST /desktop/poll` | wired — recurring caller in `PollLoop` running inside `EnforcementService` |
-| `POST /desktop/request-uninstall` | sketched — method exists, no UI button + no 72h cooldown timer (A3) |
+| `POST /desktop/request-uninstall` | **A3 — wired.** "Ask friend" button + pendingUninstallReqId tracking + decision-clearing in PollLoop |
+| `POST /desktop/request-focus-release` | **A3 — wired.** Mirror of desktop M7; solo focus stays uncancellable |
+| 72h emergency cooldown | **A3 — wired.** Non-cancellable; hard-confirm dialog; countdown UI; `uninstallGate` auto-flips when elapsed |
+| User-managed allowlist | **A3 — wired.** Additive-only; safety-critical defaults (dialer, Settings, system UI) cannot be removed |
 | Curfew schedule storage (DataStore) | wired — `ScheduleStore` reads/writes JSON; default empty |
 | Curfew-time math (incl. overnight) | wired — `Schedule.isCurfewActive()` handles start≤end + start>end |
 | Foreground service + 60s tick | wired — `EnforcementService` |
@@ -50,8 +54,8 @@ NightOwlDeviceAdminReceiver  ← user must grant via Settings → Security
 | Schedule editor UI | **A2 — wired.** Mon–Sun rows, presets (Night Owl / Early Bird / Weekend Flex), lock-duration chip group, save + activate, validates HH:MM format |
 | Bot poll loop | **A2 — wired.** Verifies Ed25519 sig on each `BotMessage` using canonical-JSON preimage matching desktop byte-for-byte. Dispatches all v2 message kinds. Replay defense via `lastConsumedSeq` |
 | AccessibilityService for app blocking | **A2 — wired.** `AppBlockerService` bounces non-allowlisted foreground apps back to home during curfew. Tight allowlist (system UI, Settings, dialer packages, launcher) |
-| Friend Focus | **not started** — M7 desktop feature still not ported (A3) |
-| Uninstall request flow | **not started** — A3 |
+| Friend Focus | **A3 — wired.** Opt-in `friendGated` per session; "Ask friend to release" via signed `request_focus_release` |
+| Uninstall request flow | **A3 — wired.** See above |
 | Self-healing daemon | **not started** — still pending from v1 |
 
 ## Threat model differences from macOS / Windows
@@ -160,11 +164,13 @@ it once with `gradle wrapper --gradle-version 8.7` from your machine.
 - **A1** (`8215ba1`) — tracer-bullet scaffold. Compiles, installs, locks the
   screen during curfew. Schedule UI + poll loop + uninstall request UI all
   stubbed.
-- **A2** (current) — Schedule editor UI + bot poll loop + AccessibilityService
-  for per-app blocking during curfew. Real friend can pair, set password,
-  and trigger active enforcement end-to-end. Real-device validation pending.
-  Tag: `android-v0.2.0-alpha.1`.
-- **A3** — Uninstall request flow + 72h emergency cooldown + Friend Focus +
-  user-managed allowlist for the app blocker.
+- **A2** — Schedule editor UI + bot poll loop + AccessibilityService for
+  per-app blocking during curfew. Real friend can pair, set password,
+  and trigger active enforcement end-to-end. Tag: `android-v0.2.0-alpha.1`
+  (pending metal validation).
+- **A3** (current) — Uninstall request flow + 72h non-cancellable emergency
+  cooldown + Friend Focus port (solo + friend-gated) + user-managed allowlist.
+  Tag: `android-v0.3.0-alpha.1` (pending metal validation). See
+  `changes/A03-uninstall-cooldown-friend-focus-allowlist.md`.
 - **A4** — F-Droid build reproducibility + signed release APK + the
-  `/install` bot command serves the APK.
+  `/install` bot command serves the APK. Real-device validation gating.

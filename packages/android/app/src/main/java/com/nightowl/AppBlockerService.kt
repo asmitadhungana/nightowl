@@ -40,13 +40,17 @@ import java.time.ZoneId
 class AppBlockerService : AccessibilityService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val cached = MutableStateFlow(Schedule())
+    private val cachedSchedule = MutableStateFlow(Schedule())
+    private val cachedFocus = MutableStateFlow(FocusSession())
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.i(TAG, "AccessibilityService connected; subscribing to schedule")
+        Log.i(TAG, "AccessibilityService connected; subscribing to schedule + focus")
         scope.launch {
-            ScheduleStore(applicationContext).schedule.collect { cached.value = it }
+            ScheduleStore(applicationContext).schedule.collect { cachedSchedule.value = it }
+        }
+        scope.launch {
+            FocusStore(applicationContext).session.collect { cachedFocus.value = it }
         }
     }
 
@@ -54,16 +58,26 @@ class AppBlockerService : AccessibilityService() {
         if (event == null) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
-        if (pkg in ALLOWLIST) return
 
-        val sched = cached.value
-        if (!sched.active) return
-        val zone = runCatching { ZoneId.of(sched.timezone.ifBlank { "UTC" }) }.getOrDefault(ZoneId.of("UTC"))
-        val now = LocalDateTime.now(zone)
-        val dayKey = now.dayOfWeek.name.lowercase()
-        val hhmm = "%02d:%02d".format(now.hour, now.minute)
-        if (sched.isCurfewActive(dayKey, hhmm)) {
-            Log.i(TAG, "blocking $pkg during curfew $dayKey $hhmm")
+        val sched = cachedSchedule.value
+        val focus = cachedFocus.value
+        // Union the hardcoded defaults with the user's additions. Defaults are
+        // never subtractable — see Schedule.userAllowlist doc.
+        val effectiveAllowlist = HARDCODED_ALLOWLIST + sched.userAllowlist
+        if (pkg in effectiveAllowlist) return
+
+        val curfewing = if (sched.active) {
+            val zone = runCatching { ZoneId.of(sched.timezone.ifBlank { "UTC" }) }.getOrDefault(ZoneId.of("UTC"))
+            val now = LocalDateTime.now(zone)
+            val dayKey = now.dayOfWeek.name.lowercase()
+            val hhmm = "%02d:%02d".format(now.hour, now.minute)
+            sched.isCurfewActive(dayKey, hhmm)
+        } else false
+
+        val focusing = focus.active && !focus.isElapsed()
+
+        if (curfewing || focusing) {
+            Log.i(TAG, "blocking $pkg (curfew=$curfewing, focus=$focusing)")
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }
@@ -81,20 +95,21 @@ class AppBlockerService : AccessibilityService() {
         private const val TAG = "NightOwlAppBlocker"
 
         /**
-         * Packages exempt from blocking during curfew.
+         * Hardcoded defaults — packages exempt from blocking during curfew + focus.
          *
          * Includes:
          *   - NightOwl itself (so the user can still see status + grant perms).
          *   - System UI / Android (notification shade, status bar, home screen).
          *   - Settings (so the user can still grant device admin / accessibility,
-         *     and so the friend-mediated emergency cooldown UX in A3 stays reachable).
+         *     and so the friend-mediated emergency cooldown UX stays reachable).
          *   - Dialer packages (911 / equivalent emergency calls). Multiple package
          *     names because OEMs vary — Google, AOSP, Samsung.
          *
-         * This list is intentionally tight; widen it via a future user-managed
-         * allowlist screen, not by hardcoding more here.
+         * **A3:** users can extend this set via [Schedule.userAllowlist] in the UI.
+         * Their additions are union'd with this list at the event-dispatch site —
+         * they can ADD but cannot SUBTRACT defaults (the safety-critical ones).
          */
-        private val ALLOWLIST = setOf(
+        val HARDCODED_ALLOWLIST: Set<String> = setOf(
             "com.nightowl",
             "com.android.systemui",
             "android",

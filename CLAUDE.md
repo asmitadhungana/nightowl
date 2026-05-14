@@ -280,13 +280,16 @@ packages/android/         ← standalone Gradle project, NOT in npm workspaces
 ├── app/build.gradle.kts  ← Compose 1.5.14, Tink 1.13.0, OkHttp 4.12, kotlinx.serialization
 ├── app/src/main/java/com/nightowl/
 │   ├── MainActivity.kt + HomeViewModel.kt + ScheduleEditor.kt — Compose UI
+│   ├── UninstallCard.kt + FocusCard.kt + AllowlistCard.kt — A3 Compose cards
 │   ├── ScheduleStore.kt — DataStore-backed Schedule + DelegationState (mirrors shared/types)
+│   ├── FocusStore.kt — A3: separate DataStore for FocusSession (parallel to ScheduleStore)
+│   ├── DelegationGates.kt — A3: Kotlin port of uninstallGate + focusReleaseGate + 72h cooldown predicates
 │   ├── Identity.kt — Ed25519 keypair via Tink; BOT_PUBKEY_HEX matches packages/shared
-│   ├── BotClient.kt — OkHttp client for /desktop/{enroll,poll,request-uninstall}
-│   ├── PollLoop.kt — A2: recurring bot poll, sig verify, message dispatch
-│   ├── CanonicalJson.kt — A2: byte-for-byte mirror of packages/bot/src/crypto.ts canonicalJson
-│   ├── EnforcementService.kt — foreground service, 60s curfew tick + poll-loop coroutine
-│   ├── AppBlockerService.kt — A2: AccessibilityService that bounces non-allowlisted apps during curfew
+│   ├── BotClient.kt — OkHttp client for /desktop/{enroll,poll,request-uninstall,request-focus-release}
+│   ├── PollLoop.kt — recurring bot poll, sig verify, message dispatch (5 kinds)
+│   ├── CanonicalJson.kt — byte-for-byte mirror of packages/bot/src/crypto.ts canonicalJson
+│   ├── EnforcementService.kt — foreground service, curfew+focus tick + poll-loop coroutine
+│   ├── AppBlockerService.kt — AccessibilityService; A3 reads userAllowlist + focus state
 │   ├── NightOwlDeviceAdminReceiver.kt — DeviceAdmin for lockNow()
 │   └── BootReceiver.kt — re-arms enforcement after reboot
 ```
@@ -305,7 +308,8 @@ If a future request would relax any of these, push back.
 ### Per-milestone history → `changes/`
 
 - **A1** (`8215ba1`, 2026-05-13) — tracer-bullet scaffold. Compose UI for pairing + arming, Ed25519 identity, `DevicePolicyManager.lockNow()` during curfew, BootReceiver. Schedule editor + poll loop + app blocker all stubbed.
-- **A2** (current, 2026-05-14) — schedule editor UI, bot poll loop (sig-verifies + dispatches all v2 message kinds), AccessibilityService app blocker. Tag: `android-v0.2.0-alpha.1`. See `changes/A02-schedule-editor-poll-loop-app-blocker.md`. **Real-device validation pending.**
+- **A2** (`22d11e1`, 2026-05-14) — schedule editor UI, bot poll loop (sig-verifies + dispatches all v2 message kinds), AccessibilityService app blocker. Tag: `android-v0.2.0-alpha.1`. See `changes/A02-schedule-editor-poll-loop-app-blocker.md`. **Real-device validation pending.**
+- **A3** (current, 2026-05-14) — uninstall request flow + 72h non-cancellable emergency cooldown + Friend Focus port (solo + friend-gated) + user-managed app-blocker allowlist. New `DelegationGates.kt` (Kotlin mirror of `packages/shared/src/delegation.ts`), `FocusStore.kt` (separate DataStore namespace), three new Compose cards (`UninstallCard`, `FocusCard`, `AllowlistCard`). Tag: `android-v0.3.0-alpha.1`. See `changes/A03-uninstall-cooldown-friend-focus-allowlist.md`. **Real-device validation pending.**
 
 ### Paths intentionally NOT taken (in addition to v2's + v3's lists)
 
@@ -317,8 +321,11 @@ If a future request would relax any of these, push back.
 
 ### Open work
 
-- **A3** — Uninstall request flow + 72h emergency cooldown UI + Friend Focus port + user-managed app-blocker allowlist screen.
 - **A4** — F-Droid build reproducibility + signed release APK + `/install` bot command serves the APK to Android user-agents.
-- **Real-device validation** — every A* milestone needs metal testing before we call it done. A2 has not yet been validated on physical hardware.
+- **Real-device validation** — every A* milestone needs metal testing before we call it done. **A2 + A3 have not yet been validated on physical hardware.** Validation is the gating step before tagging either `android-v0.2.0-alpha.1` or `android-v0.3.0-alpha.1` and before any v5 mobile-controller work begins.
 - Self-healing daemon — still carried from v1, still not blocking.
+
+### Future (v5+, deferred behind A3 + v2.0.0 prod validation)
+
+- **Mobile-as-controller architecture** — phone is just-another-renderer for the macOS desktop, communicating over the existing bot Worker as a signed-message relay. Full design captured in `changes/V05-future-mobile-controller.md`; do not start v5 work until A3 is metal-validated and v2.0.0 has real users. Load-bearing invariant: phone respects every gate the desktop renderer respects — it must NOT become a Friend-Lock bypass.
 
