@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
  * HTTP client for the NightOwl bot Worker. Wire-compatible with the macOS / Windows
  * desktop client in [packages/desktop/src/main/friendlock.ts].
  *
- * Preimage formats — must match the bot's [packages/bot/src/routes/*.ts] exactly:
+ * Preimage formats — must match the bot's `packages/bot/src/routes/` handlers exactly:
  *   enroll              : "enroll|<userPubkeyHex>|<ts>"
  *   poll                : "poll|<pairingId>|<lastSeq>|<ts>"
  *   request_uninstall   : "request_uninstall|<pairingId>|<reqId>|<ts>"

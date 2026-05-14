@@ -74,8 +74,17 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
       await handleSetPassword(env, chatId, pw);
     } else if (text === '/help') {
       await sendMessage(env.TG_BOT_TOKEN, chatId, HELP_MESSAGE);
-    } else if (text === '/install') {
-      await sendMessage(env.TG_BOT_TOKEN, chatId, INSTALL_MESSAGE);
+    } else if (text === '/install' || text.startsWith('/install ')) {
+      // No-arg `/install` shows the picker; `/install android|windows|macos`
+      // jumps straight to the OS-specific download + setup steps. Telegram
+      // bots can't see device user-agent so we ask the user to self-select.
+      const arg = text.slice('/install'.length).trim().toLowerCase();
+      const selected =
+        arg === 'android' ? INSTALL_ANDROID_MESSAGE :
+        arg === 'windows' ? INSTALL_WINDOWS_MESSAGE :
+        arg === 'macos' || arg === 'mac' ? INSTALL_MACOS_MESSAGE :
+        INSTALL_PICKER_MESSAGE;
+      await sendMessage(env.TG_BOT_TOKEN, chatId, selected, { parse_mode: 'Markdown' });
     } else if (text === '/status') {
       await handleStatus(env, chatId);
     } else if (text === '/revoke') {
@@ -120,22 +129,59 @@ const HELP_MESSAGE = `Commands:
 
 Privacy: I never store your password. I hash it in memory (bcrypt) and forward only the hash to your friend's machine.`;
 
-const INSTALL_MESSAGE = `🦉 NightOwl — Windows alpha
+const INSTALL_PICKER_MESSAGE = `🦉 *NightOwl install* — pick your platform:
+
+📱 \`/install android\` — Android 8.0+ (alpha, sideload APK)
+🪟 \`/install windows\` — Windows 10/11 x64 (alpha, unsigned installer)
+🍎 \`/install macos\` — macOS 12+ (Apple Silicon / Intel)
+
+Reply with the command for your device and I'll send the download link + setup steps.`;
+
+const INSTALL_ANDROID_MESSAGE = `📱 *NightOwl — Android alpha*
+
+Download (APK): https://github.com/asmitadhungana/nightowl/releases/download/android-v0.3.0-alpha.1/nightowl-android-v0.3.0-alpha.1.apk
+
+Install steps:
+1. Tap the link from your Android phone (or transfer the APK if you're on desktop).
+2. Android will warn "you can't install apps from this source". Tap *Settings* → toggle on *Allow from this source* for your browser/file manager → go back and tap the APK again.
+3. Tap *Install* → *Open*.
+
+First-run inside NightOwl:
+1. Tap *Permissions → Grant* next to "Device admin" → *Activate*.
+2. Tap *Permissions → Grant* next to "App blocker (Accessibility)". Settings opens; find *NightOwl* and turn it on. (Without this, curfew only re-locks the screen — apps will still open between locks.)
+3. Tap *Generate pair code*. Send the 8-char code to your locker over regular Telegram (NOT this bot).
+4. Locker DMs me \`/pair <CODE>\` then \`/setpassword <PW>\`.
+5. Configure your weekly schedule, pick a lock duration, *Save schedule*, *Activate*, *Arm enforcement service*.
+
+Heads up: alpha. Real \`lockNow()\` calls. Curfew + Focus both work. Min Android version: 8.0.`;
+
+const INSTALL_WINDOWS_MESSAGE = `🪟 *NightOwl — Windows alpha*
 
 Download: https://github.com/asmitadhungana/nightowl/releases/download/v3.0.0-alpha.1/NightOwl-Setup-2.0.0.exe
 
 Install steps:
-1. Right-click the .exe → Run as administrator.
-2. Windows SmartScreen will warn it's unsigned. Click "More info" → "Run anyway".
+1. Right-click the .exe → *Run as administrator*.
+2. Windows SmartScreen will warn it's unsigned. Click *More info* → *Run anyway*.
 3. Walk through the installer (defaults are fine).
-4. Open NightOwl from the Start Menu → click "Install Daemon" (one more UAC prompt).
+4. Open NightOwl from the Start Menu → click *Install Daemon* (one more UAC prompt).
 5. Set your curfew hours per day and how many days to lock yourself in for.
-6. Switch lock mode to "Friend" → click "Generate Pair Code".
+6. Switch lock mode to *Friend* → click *Generate Pair Code*.
 7. Send the 8-character code (privately, not in a group) to the person who'll hold your lock password.
 
-Heads up: alpha build. Real shutdowns. Save your work before testing.
+Heads up: alpha build. Real shutdowns. Save your work before testing.`;
 
-macOS: not yet served from here — ask your locker for a build.`;
+const INSTALL_MACOS_MESSAGE = `🍎 *NightOwl — macOS*
+
+Download: https://github.com/asmitadhungana/nightowl/releases/tag/v1.0.0 (look for the .dmg)
+
+Install steps:
+1. Open the .dmg, drag *NightOwl* into Applications.
+2. First launch: right-click → *Open* (Gatekeeper will warn it's unidentified — click *Open* again).
+3. Click *Install Daemon* (admin password required — runs as root for enforcement).
+4. Set per-day curfew + lock duration.
+5. Switch to *Friend* mode → *Generate Pair Code* → send the 8-char code to your locker.
+
+Heads up: enforcement is real — your machine will shut down during curfew. Save your work.`;
 
 /** Handle /pair CODE. */
 async function handlePair(

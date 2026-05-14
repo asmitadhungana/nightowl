@@ -50,8 +50,11 @@ class Identity private constructor(
         }
 
         private fun generateAndSave(file: File): Identity {
-            val privateKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            val keyPair = Ed25519Sign.KeyPair.newKeyPair(privateKey)
+            // Tink's Ed25519Sign.KeyPair.newKeyPair() generates a 32-byte seed
+            // via its own SecureRandom internally — we don't pass our own. The
+            // returned keyPair.privateKey is the raw 32-byte seed; the public
+            // key is the derived 32-byte Ed25519 public component.
+            val keyPair = Ed25519Sign.KeyPair.newKeyPair()
             file.writeBytes(keyPair.privateKey + keyPair.publicKey)
             return Identity(keyPair.privateKey, keyPair.publicKey)
         }
