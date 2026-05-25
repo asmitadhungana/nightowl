@@ -46,6 +46,12 @@ export interface Pairing {
    * blur the friend/user trust boundary).
    */
   passwordConsumed: boolean;
+  /**
+   * Circles Phase 1 (additive): links this pairing's user to a multi-device
+   * Account. Absent on pre-Circles pairings. When set, the user's schedule + lock
+   * span every device in the account, not just this install.
+   */
+  accountId?: string | null;
 }
 
 /**
@@ -62,8 +68,13 @@ export interface Pairing {
  *                    termination of a Friend Focus session. Separate kind so a
  *                    single approval doesn't accidentally green-light both
  *                    actions on the desktop side.
+ * - curfew_report  — Circles Phase 1 witnessing: an account-addressed compliance
+ *                    summary (kept / coverage_gap + streak) fanned out to opted-in
+ *                    witnesses. Fan-out wiring is Phase 2; the kind is registered
+ *                    now so existing clients tolerate it (verified — clients ignore
+ *                    unknown kinds). Payload shape = @nightowl/shared CurfewReportPayload.
  */
-export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision';
+export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision' | 'curfew_report';
 
 /** A signed message in the inbox queue. */
 export interface InboxMessage {
@@ -184,4 +195,94 @@ export interface RequestFocusReleaseBody {
 export interface RequestFocusReleaseResponse {
   reqId: string;
   result: 'queued' | 'no_friend' | 'duplicate';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Circles Phase 1 — multi-device Accounts.
+// Persistence shape mirrors @nightowl/shared `Account` (the tested logic lives
+// there; the bot only stores + relays). Kept self-contained so the Worker bundle
+// pulls in no node built-ins. Any change here also touches shared + the Kotlin
+// mirror.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One device enrolled under an account (bot persistence). */
+export interface AccountDevice {
+  /** Raw 32-byte Ed25519 pubkey, hex. The device's identity. */
+  devicePubkeyHex: string;
+  label: string;
+  attachedAt: string;
+  /** ISO timestamp of last enforcement heartbeat; null until first beat. */
+  lastHeartbeatAt: string | null;
+  /** Whether the last heartbeat reported NightOwl actively enforcing curfew. */
+  lastEnforcing: boolean;
+}
+
+/** One person = one schedule + N enforcing devices. */
+export interface Account {
+  /** Bot-assigned UUID; primary key. */
+  accountId: string;
+  createdAt: string;
+  /** Invariant: length >= 1. */
+  devices: AccountDevice[];
+}
+
+/** Mirror of @nightowl/shared MAX_DEVICES_PER_ACCOUNT — keep in sync. */
+export const MAX_DEVICES_PER_ACCOUNT = 10;
+
+/** A short-lived device-join code, minted by an existing device of the account. */
+export interface JoinCodeRecord {
+  accountId: string;
+  /** Unix epoch ms; KV TTL backs this up but we re-check on read. */
+  expiresAt: number;
+}
+
+/** POST /desktop/account/create — a founding device starts a new account. */
+export interface CreateAccountBody {
+  devicePubkeyHex: string;
+  label: string;
+  ts: number;
+  /** Ed25519 sig over "account_create|"+devicePubkeyHex+"|"+ts. */
+  sig: string;
+}
+export interface CreateAccountResponse {
+  accountId: string;
+}
+
+/** POST /desktop/account/join-code — an existing device mints a join code. */
+export interface MintJoinCodeBody {
+  accountId: string;
+  /** An already-attached device pubkey; proves the minter is in the account. */
+  devicePubkeyHex: string;
+  ts: number;
+  /** Ed25519 sig over "account_joincode|"+accountId+"|"+devicePubkeyHex+"|"+ts. */
+  sig: string;
+}
+export interface MintJoinCodeResponse {
+  code: string;
+  expiresAt: number;
+}
+
+/** POST /desktop/account/attach — a new device redeems a join code. */
+export interface AttachDeviceBody {
+  code: string;
+  devicePubkeyHex: string;
+  label: string;
+  ts: number;
+  /** Ed25519 sig over "account_attach|"+code+"|"+devicePubkeyHex+"|"+ts (signed by the NEW device). */
+  sig: string;
+}
+export interface AttachDeviceResponse {
+  accountId: string;
+  result: 'attached' | 'already_attached';
+}
+
+/** POST /desktop/account/heartbeat — a device reports its enforcement status. */
+export interface HeartbeatBody {
+  accountId: string;
+  devicePubkeyHex: string;
+  /** True iff NightOwl is actively enforcing the curfew on this device now. */
+  enforcing: boolean;
+  ts: number;
+  /** Ed25519 sig over "account_heartbeat|"+accountId+"|"+devicePubkeyHex+"|"+enforcing+"|"+ts. */
+  sig: string;
 }

@@ -10,17 +10,20 @@
  */
 
 import type { Env } from './env.js';
-import type { InboxMessage, InviteRecord, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
+import type { Account, InboxMessage, InviteRecord, JoinCodeRecord, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
 
 const PAIR_PREFIX = 'pair:';
 const PCODE_PREFIX = 'pcode:';
 const INBOX_PREFIX = 'inbox:';
 const UREQ_PREFIX = 'ureq:';
 const INVITE_PREFIX = 'invite:';
+const ACCT_PREFIX = 'acct:';
+const JCODE_PREFIX = 'jcode:';
 
 const PAIR_CODE_TTL_SECONDS = 5 * 60;
 const UREQ_TTL_SECONDS = 7 * 24 * 60 * 60;
 const INVITE_TTL_SECONDS = 24 * 60 * 60;
+const JOIN_CODE_TTL_SECONDS = 5 * 60;
 const INBOX_CAP = 50;
 
 export async function getPairing(env: Env, pairingId: string): Promise<Pairing | null> {
@@ -105,3 +108,36 @@ export async function putInvite(env: Env, invite: InviteRecord): Promise<void> {
     expirationTtl: INVITE_TTL_SECONDS,
   });
 }
+
+// ── Circles Phase 1 — Accounts + device-join codes ──────────────────────────
+
+export async function getAccount(env: Env, accountId: string): Promise<Account | null> {
+  const raw = await env.NIGHTOWL_KV.get(ACCT_PREFIX + accountId);
+  return raw ? (JSON.parse(raw) as Account) : null;
+}
+
+export async function putAccount(env: Env, account: Account): Promise<void> {
+  await env.NIGHTOWL_KV.put(ACCT_PREFIX + account.accountId, JSON.stringify(account));
+}
+
+export async function getJoinCode(env: Env, code: string): Promise<JoinCodeRecord | null> {
+  const raw = await env.NIGHTOWL_KV.get(JCODE_PREFIX + code);
+  if (!raw) return null;
+  const rec = JSON.parse(raw) as JoinCodeRecord;
+  // Defense in depth — KV TTL is best-effort.
+  if (rec.expiresAt < Date.now()) return null;
+  return rec;
+}
+
+export async function putJoinCode(env: Env, code: string, accountId: string, expiresAtMs: number): Promise<void> {
+  const value: JoinCodeRecord = { accountId, expiresAt: expiresAtMs };
+  await env.NIGHTOWL_KV.put(JCODE_PREFIX + code, JSON.stringify(value), {
+    expirationTtl: JOIN_CODE_TTL_SECONDS,
+  });
+}
+
+export async function deleteJoinCode(env: Env, code: string): Promise<void> {
+  await env.NIGHTOWL_KV.delete(JCODE_PREFIX + code);
+}
+
+export const JOIN_CODE_TTL_MS = JOIN_CODE_TTL_SECONDS * 1000;
