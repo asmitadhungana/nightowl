@@ -6,3 +6,8 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+
+# release signing — never commit
+release.keystore
+keystore.properties
+*.apk

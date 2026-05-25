@@ -17,3 +17,7 @@ packages/*/dist/
 packages/bot/secrets/
 .dev.vars
 .wrangler/
+
+# Built app binaries — distributed via GitHub Releases, never committed
+*.apk
+*.exe
