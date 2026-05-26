@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
 import java.time.ZoneId
 
@@ -110,14 +111,35 @@ class EnforcementService : Service() {
 
     private suspend fun tickLoop() {
         while (true) {
-            // Auto-clear an elapsed focus session so the UI reflects reality without
-            // requiring an app re-open.
+            val sched0 = store.schedule.first()
             val focus = focusStore.session.first()
+            // Auto-clear an elapsed focus session so the UI reflects reality without an app re-open.
             if (focus.active && focus.isElapsed()) {
                 focusStore.update { FocusSession() }
             }
+            // Lock period over → deactivate so it stops enforcing and the service can stand down.
+            val sched = if (sched0.isLockExpired()) {
+                store.update { it.copy(active = false) }
+                sched0.copy(active = false)
+            } else {
+                sched0
+            }
 
-            val enforcing = enforcingNow()
+            val focusing = focus.active && !focus.isElapsed()
+            // Nothing left to enforce (no active lock AND no live focus) → stand down cleanly
+            // instead of lingering as a zombie foreground service. Cancel the watchdog so it
+            // won't resurrect us; arming again later reschedules it. NOTE: a daytime gap
+            // outside the curfew window is NOT this state — sched.active is still true then.
+            if (!sched.active && !focusing) {
+                Watchdog.cancel(applicationContext)
+                withContext(Dispatchers.Main) {
+                    stopForeground(Service.STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return
+            }
+
+            val enforcing = curfewActive(sched) || focusing
             if (enforcing && dpm.isAdminActive(adminComponent)) {
                 runCatching { dpm.lockNow() }
             }
@@ -125,11 +147,11 @@ class EnforcementService : Service() {
         }
     }
 
-    /** True iff a curfew window or an active (non-elapsed) focus session is in effect right now. */
+    /** True iff an in-period curfew lock or a live focus session is in effect right now. */
     private suspend fun enforcingNow(): Boolean {
         val sched = store.schedule.first()
         val focus = focusStore.session.first()
-        return curfewActive(sched) || (focus.active && !focus.isElapsed())
+        return (sched.active && !sched.isLockExpired()) || (focus.active && !focus.isElapsed())
     }
 
     private fun curfewActive(sched: Schedule): Boolean {

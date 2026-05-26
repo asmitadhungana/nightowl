@@ -42,6 +42,12 @@ object Watchdog {
         }.onFailure { Log.w(TAG, "failed to schedule watchdog: ${it.message}") }
     }
 
+    /** Cancel the watchdog — used when the service stands down (nothing left to enforce). */
+    fun cancel(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        runCatching { am.cancel(pendingIntent(ctx)) }
+    }
+
     private fun pendingIntent(ctx: Context): PendingIntent {
         val intent = Intent(ctx.applicationContext, WatchdogReceiver::class.java).setAction(ACTION_TICK)
         var flags = PendingIntent.FLAG_UPDATE_CURRENT

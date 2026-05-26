@@ -116,6 +116,18 @@ data class Schedule(
             nowHHMM >= start || nowHHMM <= end
         }
     }
+
+    /**
+     * True once an active lock's period has ended (lockEndDate is in the past).
+     * Used to stand enforcement down after the committed week is over — distinct
+     * from "not currently in a curfew window," which is a normal daytime state.
+     */
+    fun isLockExpired(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (!active) return false
+        val end = lockEndDate ?: return false
+        val endMs = runCatching { Instant.parse(end).toEpochMilli() }.getOrNull() ?: return false
+        return nowMs >= endMs
+    }
 }
 
 /** Lowercase ISO weekday names in display order. Stable across the app — used as map keys. */

@@ -53,5 +53,16 @@ Fix — an `AlarmManager`-based watchdog (new `Watchdog.kt` + `WatchdogReceiver.
 
 Known minor wart: the watchdog keeps the FGS alive even after a lock legitimately expires (no active-schedule check, to keep the FGS start inside the alarm exemption window). Acceptable for an always-on enforcement tool; refine later if needed.
 
+## A05.2 — post-expiry service stand-down (v0.3.6-alpha.1)
+
+The watchdog made enforcement immortal — including after a lock legitimately ends, leaving a zombie foreground service + persistent notification. Fixed so the service stands down cleanly when there's genuinely nothing left to enforce:
+
+- New `Schedule.isLockExpired(nowMs)` (true once an active lock's `lockEndDate` is in the past) in `ScheduleStore.kt`.
+- `EnforcementService.tickLoop`: when the lock period has ended it sets `active = false` (the immutability window is over, so deactivation is allowed), and when **neither an active lock nor a live focus** remains it cancels the watchdog, `stopForeground(STOP_FOREGROUND_REMOVE)`, and `stopSelf()`.
+- **Critically NOT a stand-down trigger:** a daytime gap outside the curfew window — `active` is still true then, so the service stays alive and ready for tonight. Verified on the Mi 9 Lite: with the live 7-day lock (end date in the future), the service stayed running across an 8s observation, i.e. did not erroneously stand down.
+- `enforcingNow()` (the instant-relock check) also respects expiry now.
+
+Re-arming after a new lock reschedules the watchdog and restarts the service. versionCode 8→9, 0.3.5→0.3.6-alpha.1.
+
 ## Distribution
 - Builds are `app/build/outputs/apk/release/app-release.apk` (release-signed, non-debuggable). Latest: **v0.3.5-alpha.1** (versionCode 8) with the watchdog. Tags `android-v0.3.4-alpha.1` and `android-v0.3.5-alpha.1`; the GitHub release asset behind the bot's `/install android` link is kept pointed at the latest build (clobbered on the `android-v0.3.0-alpha.1` asset path so the live bot link needs no redeploy).
