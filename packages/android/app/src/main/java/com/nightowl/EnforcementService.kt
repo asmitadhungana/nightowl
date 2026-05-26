@@ -139,7 +139,7 @@ class EnforcementService : Service() {
                 return
             }
 
-            val enforcing = curfewActive(sched) || focusing
+            val enforcing = !sched.enforcementPaused && (curfewActive(sched) || focusing)
             if (enforcing && dpm.isAdminActive(adminComponent)) {
                 runCatching { dpm.lockNow() }
             }
@@ -157,6 +157,7 @@ class EnforcementService : Service() {
     private suspend fun enforcingNow(): Boolean {
         val sched = store.schedule.first()
         val focus = focusStore.session.first()
+        if (sched.enforcementPaused) return false
         return curfewActive(sched) || (focus.active && !focus.isElapsed())
     }
 

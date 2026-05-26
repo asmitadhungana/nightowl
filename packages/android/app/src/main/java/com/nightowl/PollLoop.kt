@@ -3,6 +3,7 @@ package com.nightowl
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
@@ -74,6 +75,7 @@ class PollLoop(
             "friend_revoked" -> applyFriendRevoked(payload, msg.seq)
             "uninstall_decision" -> applyUninstallDecision(payload, msg.seq)
             "focus_release_decision" -> applyFocusReleaseDecision(payload, msg.seq)
+            "enforcement_pause" -> applyEnforcementPause(payload, msg.seq)
             else -> {
                 Log.w(TAG, "unknown kind=${msg.kind} seq=${msg.seq}; advancing")
                 store.update { it.copy(delegation = it.delegation?.copy(lastConsumedSeq = msg.seq)) }
@@ -175,6 +177,21 @@ class PollLoop(
         }
     }
 
+    /**
+     * Friend's remote `/pause` / `/resume`. Toggles [Schedule.enforcementPaused].
+     * The service keeps running + polling while paused so a later `/resume` reaches it.
+     */
+    private suspend fun applyEnforcementPause(payload: JsonObject, seq: Long) {
+        val paused = payload["paused"]?.jsonPrimitive?.booleanOrNull ?: false
+        store.update { sched ->
+            sched.copy(
+                enforcementPaused = paused,
+                delegation = sched.delegation?.copy(lastConsumedSeq = seq),
+            )
+        }
+        Log.i(TAG, "enforcement ${if (paused) "PAUSED" else "RESUMED"} by friend (seq=$seq)")
+    }
+
     private suspend fun advance(seq: Long) {
         store.update { it.copy(delegation = it.delegation?.copy(lastConsumedSeq = seq)) }
     }
@@ -184,6 +201,9 @@ class PollLoop(
     companion object {
         private const val TAG = "NightOwlPollLoop"
         private const val CADENCE_PREACTIVE_MS = 30_000L
-        private const val CADENCE_ACTIVE_MS = 5 * 60_000L
+        // 60s once active — was 5min, tightened so a friend's remote /pause /resume
+        // (and uninstall approvals) land within ~a minute. Modest battery cost vs the
+        // remote-control responsiveness a locker living apart needs.
+        private const val CADENCE_ACTIVE_MS = 60_000L
     }
 }

@@ -139,6 +139,13 @@ private fun StatusCard(state: HomeState) {
             Text("Pairing phase: ${state.phase?.name ?: "(not enrolled)"}")
             state.friendName?.let { Text("Locker: $it") }
             Text("Lock active: ${if (state.savedSchedule.active) "YES until ${state.savedSchedule.lockEndDate}" else "no"}")
+            if (state.savedSchedule.enforcementPaused) {
+                Text(
+                    "⏸ Paused by your locker — curfew won't lock until they /resume.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }

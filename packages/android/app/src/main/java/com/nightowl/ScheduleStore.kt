@@ -95,6 +95,14 @@ data class Schedule(
      * default; user populates from the Allowlist card in the UI.
      */
     val userAllowlist: List<String> = emptyList(),
+    /**
+     * Friend-controlled remote pause. Set via the bot's `/pause` (true) and
+     * `/resume` (false) → delivered as a signed `enforcement_pause` message. When
+     * true, NightOwl stops locking/blocking but the service keeps running + polling
+     * so `/resume` can reach it. Lets a remote locker lift the lock without being
+     * physically present. The user cannot set this (it only arrives bot-signed).
+     */
+    val enforcementPaused: Boolean = false,
 ) {
     /**
      * Naive curfew check using the device's current wall clock. Overnight windows

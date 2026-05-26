@@ -76,7 +76,7 @@ class AppBlockerService : AccessibilityService() {
 
         val focusing = focus.active && !focus.isElapsed()
 
-        if (curfewing || focusing) {
+        if ((curfewing || focusing) && !sched.enforcementPaused) {
             Log.i(TAG, "blocking $pkg (curfew=$curfewing, focus=$focusing)")
             performGlobalAction(GLOBAL_ACTION_HOME)
         }

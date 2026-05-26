@@ -113,6 +113,10 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
     } else if (text.startsWith('/deny')) {
       const reqId = text.slice('/deny'.length).trim();
       await handleDecision(env, chatId, reqId, 'denied');
+    } else if (text === '/pause') {
+      await handleEnforcementPause(env, chatId, true);
+    } else if (text === '/resume') {
+      await handleEnforcementPause(env, chatId, false);
     } else {
       await sendMessage(env.TG_BOT_TOKEN, chatId, "I don't recognize that. Type /help for what I can do.");
     }
@@ -144,6 +148,8 @@ const HELP_MESSAGE = `Commands:
 /revoke              — step away from this lock. The lock keeps running, but you won't be asked to approve uninstall. The user falls back on the 72h emergency cooldown.
 /approve <REQID>     — approve a pending uninstall request from the user
 /deny <REQID>        — deny a pending uninstall request
+/pause               — remotely pause enforcement on your friend's device (your off-switch if it ever misfires while you're apart)
+/resume              — resume enforcement after a /pause
 /help                — this message
 
 Privacy: I never store your password. I hash it in memory (bcrypt) and forward only the hash to your friend's machine.`;
@@ -339,6 +345,42 @@ async function findActivePairingByFriend(env: Env, friendChatId: string): Promis
   // dep graph honest; tree-shaker drops it.
   void canonicalJson;
   return null;
+}
+
+/**
+ * Handle /pause and /resume — a friend-only remote switch that pauses or resumes
+ * enforcement on the user's device WITHOUT touching the schedule or the lock
+ * period. For the remote-locker case: if the lock ever misfires and the friend
+ * isn't physically present, they can lift it from Telegram. Within the friend's
+ * existing powers (they hold the keys) — the user can't trigger it. The device
+ * keeps polling while paused, so /resume can always reach it.
+ */
+async function handleEnforcementPause(env: Env, chatId: number, paused: boolean): Promise<void> {
+  const pairing = await findActivePairingByFriend(env, String(chatId));
+  if (!pairing) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `No active pairing found. Nothing to ${paused ? 'pause' : 'resume'}.`);
+    return;
+  }
+  pairing.botSeq += 1;
+  const payload = { paused, at: new Date().toISOString() };
+  const preimage = botMessagePreimage(pairing.pairingId, pairing.botSeq, 'enforcement_pause', payload);
+  const sig = await botSign(env.BOT_ED25519_PRIVKEY, preimage);
+  const message: InboxMessage = {
+    seq: pairing.botSeq,
+    kind: 'enforcement_pause',
+    payload,
+    sig,
+  };
+  await appendInbox(env, pairing.pairingId, message);
+  await putPairing(env, pairing);
+
+  await sendMessage(
+    env.TG_BOT_TOKEN,
+    chatId,
+    paused
+      ? "⏸ Enforcement paused on your friend's device — the curfew won't lock until you send /resume. (Takes effect within a couple of minutes, when their phone next checks in.)"
+      : "▶️ Enforcement resumed — the curfew is active again on your friend's device. (Takes effect within a couple of minutes.)",
+  );
 }
 
 /**

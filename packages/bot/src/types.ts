@@ -74,7 +74,7 @@ export interface Pairing {
  *                    now so existing clients tolerate it (verified — clients ignore
  *                    unknown kinds). Payload shape = @nightowl/shared CurfewReportPayload.
  */
-export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision' | 'curfew_report';
+export type MessageKind = 'pair_complete' | 'password_hash' | 'friend_revoked' | 'uninstall_decision' | 'focus_release_decision' | 'curfew_report' | 'enforcement_pause';
 
 /** A signed message in the inbox queue. */
 export interface InboxMessage {
