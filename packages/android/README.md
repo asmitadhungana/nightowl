@@ -16,8 +16,11 @@ layer, and that's where Android diverges materially from desktop.
   (from A2), plus uninstall request flow + 72h non-cancellable emergency cooldown +
   Friend Focus (solo + friend-gated) + user-managed allowlist. Real friend can
   `/approve` an uninstall request end-to-end, the cooldown safety net is
-  exercisable, and focus sessions work. Real-device validation still pending
-  (see Roadmap).
+  exercisable, and focus sessions work.
+- **A5 (current):** **first real-device validation** — a full pair → setpassword →
+  7-day friend-lock → enforcement loop ran on a Xiaomi Mi 9 Lite (MIUI), plus the
+  fixes that took to get there (instant-relock, self-healing watchdog, post-expiry
+  stand-down). Tested-device log + OEM gotchas: **[`DEVICE-TESTING.md`](./DEVICE-TESTING.md)**.
 
 ## Architecture (Android-specific)
 
@@ -143,8 +146,32 @@ it once with `gradle wrapper --gradle-version 8.7` from your machine.
 8. Tap **Arm enforcement service**. A persistent notification appears:
    "NightOwl is watching · Curfew enforcement is armed."
 9. When curfew fires, the screen locks. PIN unlock works (this isn't Device
-   Owner mode), but the lock returns within 60 seconds AND any non-allowlisted
-   app you launch bounces back to home.
+   Owner mode), but it **re-locks the instant you finish unlocking** (a
+   `USER_PRESENT` receiver — a quick PIN unlock otherwise left a usable window on
+   phones), plus a ~5s backup tick, AND any non-allowlisted app you launch bounces
+   back to home (where the accessibility service stays bound).
+
+## OEM quirks — Xiaomi / MIUI (and other aggressive skins)
+
+NightOwl has been metal-tested on a **Xiaomi Mi 9 Lite (Android 10/11, MIUI)** — full log + per-device matrix in **[`DEVICE-TESTING.md`](./DEVICE-TESTING.md)**. Aggressive OEM skins (MIUI, One UI, ColorOS…) fight sideloaded apps that use Device Admin + Accessibility, so a few extra steps are required or enforcement silently won't fire.
+
+**Installing past Play Protect:**
+- Play Protect hard-blocks the APK ("App blocked", often only an **OK** button on Android ≤12). Disable it briefly: **Play Store → profile → Play Protect → gear → turn off "Scan apps with Play Protect"**, install, then turn it back on. (Installing via `adb install` skips this entirely.)
+
+**Granting Accessibility (the app blocker):**
+- Android 13+: if the toggle is greyed, App info → ⋮ → **"Allow restricted settings."**
+- Android ≤12 on MIUI (no "restricted settings"): **Developer options → "Turn off MIUI optimization"** → reboot → then enable NightOwl under Accessibility.
+- **Reality check:** MIUI often won't keep the accessibility service *bound* (it shows enabled but `dumpsys accessibility` reports `Bound services:{}`), so the per-app blocker is unreliable on Xiaomi. The **Device-Admin screen-lock is the dependable enforcement layer** there; accessibility app-blocking is best-effort.
+
+**Keeping enforcement alive (critical — or the curfew won't fire overnight):**
+MIUI freezes background apps. Set all of these for NightOwl:
+- **Autostart → ON**
+- **Battery saver → No restrictions**
+- Lock the app in **Recents** (long-press the card → lock icon)
+
+A self-healing watchdog (`AlarmManager`, lives in the system so it survives the process being killed) re-arms the service within ~15 min if MIUI kills it anyway — but the settings above prevent the kill in the first place. The **● ARMED** status in the app is your at-a-glance health check.
+
+**What no app can defend on a non-rooted phone:** the user can still force-stop NightOwl or revoke Device Admin / Accessibility in Settings. Bypass-resistance comes from the friend-held password (gating a clean uninstall) + the instant-relock deterrent — not a kernel lock. Closing that gap needs **Device Owner** mode (factory-reset provisioning), out of v4 scope.
 
 ## Distribution plan
 
@@ -174,3 +201,8 @@ it once with `gradle wrapper --gradle-version 8.7` from your machine.
   `changes/A03-uninstall-cooldown-friend-focus-allowlist.md`.
 - **A4** — F-Droid build reproducibility + signed release APK + the
   `/install` bot command serves the APK. Real-device validation gating.
+- **A5** (`android-v0.3.4` → `0.3.6-alpha.1`) — **first real-device validation**
+  (Xiaomi Mi 9 Lite, MIUI) + MIUI fixes + enforcement hardening: instant-relock on
+  unlock, ● ARMED indicator, manual focus timer, self-healing watchdog, clean
+  post-expiry stand-down. See [`DEVICE-TESTING.md`](./DEVICE-TESTING.md) and
+  `changes/A05-metal-validation-miui-fixes.md`.
