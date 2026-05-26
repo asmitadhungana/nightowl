@@ -18,7 +18,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
 /**
@@ -60,11 +65,12 @@ fun FocusCard(
 @Composable
 private fun FocusStartUi(canFriendGate: Boolean, onStart: (Int, Boolean) -> Unit) {
     var selectedMin by remember { mutableStateOf(25) }
+    var customText by remember { mutableStateOf("") }
     var friendGated by remember { mutableStateOf(false) }
 
     Text(
-        "A short, hard curfew. During focus, apps bounce back to home (if accessibility is granted) and " +
-            "the screen re-locks every 60s.",
+        "A short, hard curfew. During focus the screen re-locks the moment you unlock " +
+            "(and every few seconds after), and apps bounce back to home if accessibility is granted.",
         style = MaterialTheme.typography.bodySmall,
     )
 
@@ -72,11 +78,41 @@ private fun FocusStartUi(canFriendGate: Boolean, onStart: (Int, Boolean) -> Unit
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (min in listOf(15, 25, 45, 60, 90)) {
             FilterChip(
-                selected = selectedMin == min,
-                onClick = { selectedMin = min },
+                selected = selectedMin == min && customText.isEmpty(),
+                onClick = { selectedMin = min; customText = "" },
                 label = { Text("${min}m") },
             )
         }
+    }
+
+    // Manual timer — any value 1..480 min. Handy for quick tests and odd durations.
+    // Capped at 8h because solo focus is uncancellable: a runaway typo shouldn't
+    // be able to lock the device for days.
+    val customMin = customText.toIntOrNull()
+    val customValid = customMin != null && customMin in 1..480
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = customText,
+            onValueChange = { customText = it.filter { c -> c.isDigit() }.take(3) },
+            label = { Text("Custom min") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.width(140.dp),
+        )
+        Button(
+            enabled = customValid,
+            onClick = { customMin?.let { onStart(it, friendGated && canFriendGate) } },
+        ) { Text("Start custom") }
+    }
+    if (customText.isNotEmpty() && !customValid) {
+        Text(
+            "Enter 1–480 minutes.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
 
     if (canFriendGate) {

@@ -4,35 +4,46 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import java.time.ZoneId
 
 /**
- * Foreground service that ticks every [TICK_INTERVAL_MS], reads the current
- * schedule, and if curfew is active calls [DevicePolicyManager.lockNow].
+ * Foreground service that enforces the curfew/focus lock via
+ * [DevicePolicyManager.lockNow]. Two mechanisms, both needed on phones:
  *
- * This is the Android equivalent of the macOS launchd plist + the Windows
- * Task Scheduler. Unlike those, it CANNOT shut the device down — Android user
- * apps don't have that capability. Curfew enforcement = repeated lockNow().
+ *  1. **Instant re-lock on unlock.** A [USER_PRESENT] receiver fires the moment
+ *     the user dismisses the keyguard; if a curfew/focus is active we lockNow()
+ *     immediately. On a phone a quick PIN unlock made a 60s tick feel like a
+ *     non-event ("unlock, scroll for a minute") — relocking on USER_PRESENT
+ *     leaves no usable window. (Metal-validated 2026-05-26: the 60s-only tick
+ *     was too soft on Android.)
+ *  2. **Short backup tick.** While enforcing we re-check every
+ *     [ENFORCING_TICK_MS] (vs [IDLE_TICK_MS] when idle, to save battery) and
+ *     lockNow() — catches cases USER_PRESENT misses (screen already on, app
+ *     switches) and is the safety net if the receiver is throttled.
  *
- * Wakeup behavior: Android Doze + battery optimization may delay our ticks
- * past 60s on idle devices. The user has to whitelist NightOwl under
- * Settings → Battery → Battery optimization for reliable enforcement. This
- * is documented in [packages/android/README.md].
+ * Unlike macOS/Windows this CANNOT power the device off — Android user apps
+ * can't. Enforcement = repeated lockNow(). Doze + battery optimization can still
+ * delay ticks; the user whitelists NightOwl under Battery optimization (and, on
+ * MIUI, Autostart + No-restrictions) for reliable enforcement.
  */
 class EnforcementService : Service() {
 
@@ -40,9 +51,33 @@ class EnforcementService : Service() {
     private var tickJob: Job? = null
     private var pollJob: Job? = null
 
+    private val store by lazy { ScheduleStore(applicationContext) }
+    private val focusStore by lazy { FocusStore(applicationContext) }
+    private val dpm by lazy { getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager }
+    private val adminComponent by lazy { ComponentName(applicationContext, NightOwlDeviceAdminReceiver::class.java) }
+
+    /** Re-lock the instant the keyguard is dismissed during an active curfew/focus. */
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != Intent.ACTION_USER_PRESENT) return
+            scope.launch {
+                if (enforcingNow() && dpm.isAdminActive(adminComponent)) {
+                    runCatching { dpm.lockNow() }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIF_ID, buildNotification())
+        ContextCompat.registerReceiver(
+            this,
+            unlockReceiver,
+            IntentFilter(Intent.ACTION_USER_PRESENT),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        armed.value = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -58,12 +93,12 @@ class EnforcementService : Service() {
     private suspend fun pollLoop() {
         val identity = Identity.loadOrCreate(applicationContext)
         val client = BotClient(identity)
-        val store = ScheduleStore(applicationContext)
-        val focusStore = FocusStore(applicationContext)
         PollLoop(client, store, focusStore).runForever()
     }
 
     override fun onDestroy() {
+        armed.value = false
+        runCatching { unregisterReceiver(unlockReceiver) }
         scope.cancel()
         super.onDestroy()
     }
@@ -71,36 +106,36 @@ class EnforcementService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private suspend fun tickLoop() {
-        val store = ScheduleStore(applicationContext)
-        val focusStore = FocusStore(applicationContext)
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val adminComponent = ComponentName(applicationContext, NightOwlDeviceAdminReceiver::class.java)
-
         while (true) {
-            val sched = store.schedule.first()
+            // Auto-clear an elapsed focus session so the UI reflects reality without
+            // requiring an app re-open.
             val focus = focusStore.session.first()
-
-            // Auto-clear an elapsed focus session so the user's UI reflects reality
-            // without requiring them to open the app. lockNow() during the cleanup
-            // tick is harmless — locks return to their normal cadence after this.
             if (focus.active && focus.isElapsed()) {
                 focusStore.update { FocusSession() }
             }
 
-            val curfewing = sched.active && sched.isCurfewActive(
-                dayKey = LocalDateTime.now(zoneOf(sched.timezone)).dayOfWeek.name.lowercase(),
-                nowHHMM = "%02d:%02d".format(
-                    LocalDateTime.now(zoneOf(sched.timezone)).hour,
-                    LocalDateTime.now(zoneOf(sched.timezone)).minute,
-                ),
-            )
-            val focusing = focus.active && !focus.isElapsed()
-
-            if ((curfewing || focusing) && dpm.isAdminActive(adminComponent)) {
+            val enforcing = enforcingNow()
+            if (enforcing && dpm.isAdminActive(adminComponent)) {
                 runCatching { dpm.lockNow() }
             }
-            delay(TICK_INTERVAL_MS)
+            delay(if (enforcing) ENFORCING_TICK_MS else IDLE_TICK_MS)
         }
+    }
+
+    /** True iff a curfew window or an active (non-elapsed) focus session is in effect right now. */
+    private suspend fun enforcingNow(): Boolean {
+        val sched = store.schedule.first()
+        val focus = focusStore.session.first()
+        return curfewActive(sched) || (focus.active && !focus.isElapsed())
+    }
+
+    private fun curfewActive(sched: Schedule): Boolean {
+        if (!sched.active) return false
+        val now = LocalDateTime.now(zoneOf(sched.timezone))
+        return sched.isCurfewActive(
+            dayKey = now.dayOfWeek.name.lowercase(),
+            nowHHMM = "%02d:%02d".format(now.hour, now.minute),
+        )
     }
 
     private fun zoneOf(tz: String): ZoneId =
@@ -122,9 +157,23 @@ class EnforcementService : Service() {
     }
 
     companion object {
+        /**
+         * True while the service is running in this process. The UI observes this
+         * to show ARMED / NOT-ARMED at a glance, so the user doesn't have to check
+         * the notification shade. Resets to false if MIUI kills the process (the
+         * service genuinely isn't running then) and flips back to true on re-arm.
+         */
+        val armed = MutableStateFlow(false)
+
         private const val CHANNEL_ID = "nightowl_enforcement"
         private const val NOTIF_ID = 1
-        private const val TICK_INTERVAL_MS = 60_000L
+
+        /** Re-lock cadence while a curfew/focus is active. Tight so a quick unlock
+         *  leaves no usable window; the USER_PRESENT receiver handles the instant case. */
+        private const val ENFORCING_TICK_MS = 5_000L
+
+        /** Relaxed cadence when nothing is being enforced — saves battery. */
+        private const val IDLE_TICK_MS = 60_000L
 
         fun start(ctx: Context) {
             val intent = Intent(ctx, EnforcementService::class.java)

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -176,16 +178,35 @@ private fun PairingCard(state: HomeState, onEnroll: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Friend Lock", style = MaterialTheme.typography.titleMedium)
-            if (state.pairCode != null) {
-                Text("Pair code: ${state.pairCode}", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Send this to your locker. They DM @nightowl bot: /pair ${state.pairCode} then /setpassword <pw>.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else if (state.pairingId != null) {
-                Text("Already enrolled. Waiting for friend to /pair…", style = MaterialTheme.typography.bodySmall)
-            } else {
-                Text("Not enrolled yet. Generate a pair code to begin.", style = MaterialTheme.typography.bodySmall)
+            val locker = state.friendName ?: "your friend"
+            when {
+                state.phase == DelegationPhase.active ->
+                    Text(
+                        "✓ Friend Lock active — locked by $locker, who holds the password. " +
+                            "Uninstall needs their approval (or the 72h cooldown).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                state.phase == DelegationPhase.paired || state.phase == DelegationPhase.awaiting_password ->
+                    Text(
+                        "Paired with $locker — waiting for them to set the password (/setpassword to the bot).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                state.phase == DelegationPhase.revoked ->
+                    Text(
+                        "$locker stepped away (revoked). The lock continues; the 72h emergency cooldown is the only early exit.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                state.pairCode != null -> {
+                    Text("Pair code: ${state.pairCode}", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "Send this to your locker. They DM the bot: /pair ${state.pairCode} then /setpassword <pw>.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                state.pairingId != null ->
+                    Text("Enrolled — waiting for your friend to /pair with your code.", style = MaterialTheme.typography.bodySmall)
+                else ->
+                    Text("Not enrolled yet. Generate a pair code to begin.", style = MaterialTheme.typography.bodySmall)
             }
             Button(onClick = onEnroll, enabled = state.pairCode == null && state.pairingId == null) {
                 Text("Generate pair code")
@@ -196,15 +217,35 @@ private fun PairingCard(state: HomeState, onEnroll: () -> Unit) {
 
 @Composable
 private fun EnforcementCard(onArm: () -> Unit) {
+    val armed by EnforcementService.armed.collectAsState()
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Enforcement service", style = MaterialTheme.typography.titleMedium)
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Enforcement service", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (armed) "● ARMED" else "● NOT ARMED",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (armed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                )
+            }
             Text(
-                "The foreground service ticks every 60s and polls the bot inbox. " +
-                    "Arm it once; the BootReceiver re-arms it after reboot.",
+                if (armed) {
+                    "Running — curfew + focus locks will fire, and the poll loop is syncing with the bot. " +
+                        "The BootReceiver re-arms it after reboot."
+                } else {
+                    "⚠ Not running — curfew won't enforce and pairing won't sync. Tap to arm " +
+                        "(also re-arm after an app update)."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
-            Button(onClick = onArm) { Text("Arm enforcement service") }
+            if (armed) {
+                OutlinedButton(onClick = onArm) { Text("Re-arm") }
+            } else {
+                Button(onClick = onArm) { Text("Arm enforcement service") }
+            }
         }
     }
 }
