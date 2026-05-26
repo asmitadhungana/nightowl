@@ -147,11 +147,17 @@ class EnforcementService : Service() {
         }
     }
 
-    /** True iff an in-period curfew lock or a live focus session is in effect right now. */
+    /**
+     * True iff we should be locking RIGHT NOW — i.e. inside a curfew window or a
+     * live focus session. Used by the instant-relock receiver. MUST be the
+     * current-window check (`curfewActive`), NOT merely `sched.active` — otherwise
+     * the screen re-locks on every unlock 24/7 throughout the lock period instead
+     * of only during curfew hours. (Regression fixed: v0.3.6 → v0.3.7.)
+     */
     private suspend fun enforcingNow(): Boolean {
         val sched = store.schedule.first()
         val focus = focusStore.session.first()
-        return (sched.active && !sched.isLockExpired()) || (focus.active && !focus.isElapsed())
+        return curfewActive(sched) || (focus.active && !focus.isElapsed())
     }
 
     private fun curfewActive(sched: Schedule): Boolean {

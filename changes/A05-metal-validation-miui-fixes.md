@@ -64,5 +64,13 @@ The watchdog made enforcement immortal — including after a lock legitimately e
 
 Re-arming after a new lock reschedules the watchdog and restarts the service. versionCode 8→9, 0.3.5→0.3.6-alpha.1.
 
+## A05.3 — regression fix: instant-relock fired 24/7 (v0.3.7-alpha.1)
+
+The A5.2 cleanup refactor changed `enforcingNow()` (the instant-relock predicate) from `curfewActive(sched)` to `sched.active && !isLockExpired()`. That conflated "a lock is armed" with "we should be locking **right now**" — so during an active multi-day lock the screen re-locked on *every* unlock, all day, not just inside the curfew window. Surfaced on the Mi 9 Lite at 16:48 local with an evening curfew: the phone re-locked the instant you unlocked it, hours before curfew.
+
+**Fix:** `enforcingNow()` reverts to `curfewActive(sched) || focusing` (the v0.3.5 logic). The tick loop was always correct (it used `curfewActive`); only the `USER_PRESENT` receiver's predicate was wrong. Verified on device — at 16:48 (outside the window) unlocking no longer re-locks; curfew-window enforcement is unchanged. versionCode 9→10, 0.3.6→0.3.7-alpha.1.
+
+**v0.3.6-alpha.1 is broken — do not ship; superseded by v0.3.7.** Lesson: "armed" ≠ "enforce now." Any new enforcement trigger must gate on the current curfew/focus window, not the lock's armed state.
+
 ## Distribution
 - Builds are `app/build/outputs/apk/release/app-release.apk` (release-signed, non-debuggable). Latest: **v0.3.5-alpha.1** (versionCode 8) with the watchdog. Tags `android-v0.3.4-alpha.1` and `android-v0.3.5-alpha.1`; the GitHub release asset behind the bot's `/install android` link is kept pointed at the latest build (clobbered on the `android-v0.3.0-alpha.1` asset path so the live bot link needs no redeploy).
