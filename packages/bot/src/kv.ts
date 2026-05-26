@@ -10,7 +10,7 @@
  */
 
 import type { Env } from './env.js';
-import type { Account, InboxMessage, InviteRecord, JoinCodeRecord, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
+import type { Account, Circle, CircleCodeRecord, InboxMessage, InviteRecord, JoinCodeRecord, PairCodeRecord, Pairing, UninstallRequest } from './types.js';
 
 const PAIR_PREFIX = 'pair:';
 const PCODE_PREFIX = 'pcode:';
@@ -141,3 +141,49 @@ export async function deleteJoinCode(env: Env, code: string): Promise<void> {
 }
 
 export const JOIN_CODE_TTL_MS = JOIN_CODE_TTL_SECONDS * 1000;
+
+// ── Friend Circles ──────────────────────────────────────────────────────────
+
+const CIRCLE_PREFIX = 'circle:';
+const CCODE_PREFIX = 'ccode:';
+const CMEMBER_PREFIX = 'cmember:';
+const CIRCLE_CODE_TTL_SECONDS = 7 * 24 * 60 * 60; // multi-use, 7 days to form a circle
+
+export async function getCircle(env: Env, circleId: string): Promise<Circle | null> {
+  const raw = await env.NIGHTOWL_KV.get(CIRCLE_PREFIX + circleId);
+  return raw ? (JSON.parse(raw) as Circle) : null;
+}
+
+export async function putCircle(env: Env, circle: Circle): Promise<void> {
+  await env.NIGHTOWL_KV.put(CIRCLE_PREFIX + circle.circleId, JSON.stringify(circle));
+}
+
+export async function deleteCircle(env: Env, circleId: string): Promise<void> {
+  await env.NIGHTOWL_KV.delete(CIRCLE_PREFIX + circleId);
+}
+
+export async function getCircleCode(env: Env, code: string): Promise<CircleCodeRecord | null> {
+  const raw = await env.NIGHTOWL_KV.get(CCODE_PREFIX + code);
+  if (!raw) return null;
+  const rec = JSON.parse(raw) as CircleCodeRecord;
+  if (rec.expiresAt < Date.now()) return null;
+  return rec;
+}
+
+export async function putCircleCode(env: Env, code: string, circleId: string): Promise<void> {
+  const value: CircleCodeRecord = { circleId, expiresAt: Date.now() + CIRCLE_CODE_TTL_SECONDS * 1000 };
+  await env.NIGHTOWL_KV.put(CCODE_PREFIX + code, JSON.stringify(value), { expirationTtl: CIRCLE_CODE_TTL_SECONDS });
+}
+
+/** Member → circle index (one circle per person in v1). */
+export async function getMemberCircleId(env: Env, chatId: string): Promise<string | null> {
+  return await env.NIGHTOWL_KV.get(CMEMBER_PREFIX + chatId);
+}
+
+export async function setMemberCircle(env: Env, chatId: string, circleId: string): Promise<void> {
+  await env.NIGHTOWL_KV.put(CMEMBER_PREFIX + chatId, circleId);
+}
+
+export async function clearMemberCircle(env: Env, chatId: string): Promise<void> {
+  await env.NIGHTOWL_KV.delete(CMEMBER_PREFIX + chatId);
+}

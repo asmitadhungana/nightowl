@@ -24,3 +24,6 @@ export * from './identity.js';
 
 // Circles Phase 1 — Accounts + multi-device enforcement
 export * from './account.js';
+
+// Friend Circles — bot-managed accountability groups
+export * from './circle.js';

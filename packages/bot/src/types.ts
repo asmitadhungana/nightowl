@@ -286,3 +286,40 @@ export interface HeartbeatBody {
   /** Ed25519 sig over "account_heartbeat|"+accountId+"|"+devicePubkeyHex+"|"+enforcing+"|"+ts. */
   sig: string;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Friend Circles — bot-managed accountability groups. Persistence shape mirrors
+// @nightowl/shared `circle.ts` (the tested roster logic); re-implemented thinly
+// in the handlers to keep the Worker bundle self-contained. Members are keyed by
+// Telegram chat id (the immutable identifier, like the 1:1 friend).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CircleRole = 'creator' | 'member';
+
+export interface CircleMember {
+  /** Telegram chat id (string to dodge JS number precision). */
+  chatId: string;
+  name: string;
+  role: CircleRole;
+  joinedAt: string;
+}
+
+export interface Circle {
+  /** Bot-assigned UUID; primary key. */
+  circleId: string;
+  name: string;
+  createdAt: string;
+  /** Invariant: length >= 1; exactly one `creator` while non-empty. */
+  members: CircleMember[];
+}
+
+/** Mirror of @nightowl/shared MAX_CIRCLE_MEMBERS — keep in sync. */
+export const MAX_CIRCLE_MEMBERS = 12;
+export const MAX_CIRCLE_NAME_LEN = 40;
+
+/** A multi-use circle join code (creator shares once; several friends join). */
+export interface CircleCodeRecord {
+  circleId: string;
+  /** Unix epoch ms; KV TTL backs this up but we re-check on read. */
+  expiresAt: number;
+}

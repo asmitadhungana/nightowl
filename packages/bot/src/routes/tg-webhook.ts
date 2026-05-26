@@ -23,6 +23,14 @@ import {
   putUninstallRequest,
   getInvite,
   putInvite,
+  getCircle,
+  putCircle,
+  deleteCircle,
+  getCircleCode,
+  putCircleCode,
+  getMemberCircleId,
+  setMemberCircle,
+  clearMemberCircle,
 } from '../kv.js';
 import {
   bcryptHash,
@@ -30,8 +38,10 @@ import {
   botSign,
   canonicalJson,
   generatePairCode,
+  generatePairingId,
 } from '../crypto.js';
-import type { InboxMessage, InviteRecord, Pairing, UninstallRequest } from '../types.js';
+import type { Circle, CircleMember, InboxMessage, InviteRecord, Pairing, UninstallRequest } from '../types.js';
+import { MAX_CIRCLE_MEMBERS, MAX_CIRCLE_NAME_LEN } from '../types.js';
 import { emptyOk } from '../response.js';
 
 const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -117,6 +127,15 @@ export async function handleTelegramWebhook(req: Request, env: Env, secret: stri
       await handleEnforcementPause(env, chatId, true);
     } else if (text === '/resume') {
       await handleEnforcementPause(env, chatId, false);
+    } else if (text === '/createcircle' || text.startsWith('/createcircle ')) {
+      await handleCreateCircle(env, chatId, msg.from.first_name, text.slice('/createcircle'.length).trim());
+    } else if (text.startsWith('/joincircle')) {
+      const code = text.slice('/joincircle'.length).trim().toUpperCase().replace(/-/g, '');
+      await handleJoinCircle(env, chatId, msg.from.first_name, code);
+    } else if (text === '/circle') {
+      await handleCircleStatus(env, chatId);
+    } else if (text === '/leavecircle') {
+      await handleLeaveCircle(env, chatId);
     } else {
       await sendMessage(env.TG_BOT_TOKEN, chatId, "I don't recognize that. Type /help for what I can do.");
     }
@@ -150,6 +169,10 @@ const HELP_MESSAGE = `Commands:
 /deny <REQID>        — deny a pending uninstall request
 /pause               — remotely pause enforcement on your friend's device (your off-switch if it ever misfires while you're apart)
 /resume              — resume enforcement after a /pause
+/createcircle [name] — start a friend accountability circle
+/joincircle <code>   — join a friend's circle with their code
+/circle              — show your circle's members
+/leavecircle         — leave your circle
 /help                — this message
 
 Privacy: I never store your password. I hash it in memory (bcrypt) and forward only the hash to your friend's machine.`;
@@ -345,6 +368,127 @@ async function findActivePairingByFriend(env: Env, friendChatId: string): Promis
   // dep graph honest; tree-shaker drops it.
   void canonicalJson;
   return null;
+}
+
+/**
+ * Friend Circles — bot-managed accountability groups. Members keep each other on
+ * track; each runs their own NightOwl lock. Roster logic mirrors
+ * @nightowl/shared circle.ts (re-implemented inline to keep the Worker bundle
+ * self-contained). v1: one circle per person.
+ */
+async function handleCreateCircle(env: Env, chatId: number, firstName: string, nameArg: string): Promise<void> {
+  const me = String(chatId);
+  if (await getMemberCircleId(env, me)) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You're already in a circle. Send /circle to see it, or /leavecircle before starting a new one.");
+    return;
+  }
+  const circleId = generatePairingId();
+  const name = (nameArg || `${firstName}'s circle`).slice(0, MAX_CIRCLE_NAME_LEN);
+  const now = new Date().toISOString();
+  const creator: CircleMember = { chatId: me, name: firstName, role: 'creator', joinedAt: now };
+  const circle: Circle = { circleId, name, createdAt: now, members: [creator] };
+  const code = generatePairCode();
+  await putCircle(env, circle);
+  await putCircleCode(env, code, circleId);
+  await setMemberCircle(env, me, circleId);
+  await sendMessage(
+    env.TG_BOT_TOKEN,
+    chatId,
+    `✓ Created the circle "${name}".\n\nShare this join code with the friends you want to stay accountable with:\n\n   ${code}\n\nThey each DM me: /joincircle ${code}\nCheck who's in any time with /circle.`,
+  );
+}
+
+async function handleJoinCircle(env: Env, chatId: number, firstName: string, code: string): Promise<void> {
+  const me = String(chatId);
+  if (!code) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "Send /joincircle <code> with the code a friend shared.");
+    return;
+  }
+  if (await getMemberCircleId(env, me)) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You're already in a circle. Send /leavecircle first if you want to switch.");
+    return;
+  }
+  const rec = await getCircleCode(env, code);
+  if (!rec) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "That join code is invalid or expired. Ask your friend to resend it (they can /circle to find it).");
+    return;
+  }
+  const circle = await getCircle(env, rec.circleId);
+  if (!circle) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "That circle no longer exists.");
+    return;
+  }
+  if (circle.members.some((m) => m.chatId === me)) {
+    await setMemberCircle(env, me, circle.circleId);
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `You're already in "${circle.name}". Send /circle to see it.`);
+    return;
+  }
+  if (circle.members.length >= MAX_CIRCLE_MEMBERS) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `"${circle.name}" is full (${MAX_CIRCLE_MEMBERS} members max).`);
+    return;
+  }
+  const member: CircleMember = { chatId: me, name: firstName, role: 'member', joinedAt: new Date().toISOString() };
+  circle.members.push(member);
+  await putCircle(env, circle);
+  await setMemberCircle(env, me, circle.circleId);
+  await sendMessage(
+    env.TG_BOT_TOKEN,
+    chatId,
+    `✓ You joined "${circle.name}" (${circle.members.length} members). Keep each other on track — send /circle any time to see everyone.`,
+  );
+}
+
+async function handleCircleStatus(env: Env, chatId: number): Promise<void> {
+  const me = String(chatId);
+  const circleId = await getMemberCircleId(env, me);
+  if (!circleId) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You're not in a circle yet. Start one with /createcircle [name], or join with /joincircle <code>.");
+    return;
+  }
+  const circle = await getCircle(env, circleId);
+  if (!circle) {
+    await clearMemberCircle(env, me);
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "Your circle no longer exists. Start a new one with /createcircle.");
+    return;
+  }
+  const roster = circle.members
+    .map((m) => `  • ${m.name}${m.role === 'creator' ? ' (creator)' : ''}${m.chatId === me ? ' — you' : ''}`)
+    .join('\n');
+  const count = circle.members.length;
+  await sendMessage(
+    env.TG_BOT_TOKEN,
+    chatId,
+    `🦉 Circle "${circle.name}" — ${count} member${count === 1 ? '' : 's'}:\n${roster}\n\n(Curfew streaks + compliance sharing is the next layer.) Leave with /leavecircle.`,
+  );
+}
+
+async function handleLeaveCircle(env: Env, chatId: number): Promise<void> {
+  const me = String(chatId);
+  const circleId = await getMemberCircleId(env, me);
+  if (!circleId) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You're not in a circle.");
+    return;
+  }
+  await clearMemberCircle(env, me);
+  const circle = await getCircle(env, circleId);
+  if (!circle) {
+    await sendMessage(env.TG_BOT_TOKEN, chatId, "You've left. (The circle no longer existed.)");
+    return;
+  }
+  const departingWasCreator = circle.members.find((m) => m.chatId === me)?.role === 'creator';
+  const remaining = circle.members.filter((m) => m.chatId !== me);
+  if (remaining.length === 0) {
+    await deleteCircle(env, circle.circleId);
+    await sendMessage(env.TG_BOT_TOKEN, chatId, `You left "${circle.name}". It had no other members, so it's now closed.`);
+    return;
+  }
+  // Never leave a circle leaderless — promote the earliest remaining member.
+  if (departingWasCreator && !remaining.some((m) => m.role === 'creator')) {
+    remaining[0] = { ...remaining[0], role: 'creator' };
+  }
+  circle.members = remaining;
+  await putCircle(env, circle);
+  await sendMessage(env.TG_BOT_TOKEN, chatId, `You left "${circle.name}". ${remaining.length} member${remaining.length === 1 ? '' : 's'} remain.`);
 }
 
 /**
