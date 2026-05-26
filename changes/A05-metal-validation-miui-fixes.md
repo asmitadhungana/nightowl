@@ -39,5 +39,19 @@ On a phone, a quick PIN unlock made the 60s lock tick feel like a non-event ("un
 - Soft-enforcement ceiling holds: the user can disable Device admin or force-stop the app in Settings (no Device Owner mode). Bypass-resistance = friend-held password gating clean uninstall + the deterrent of the instant-relock.
 - Accessibility app-blocking remains best-effort on MIUI.
 
+## A05.1 — self-healing watchdog (v0.3.5-alpha.1)
+
+The metal test exposed the real flaw: on MIUI the foreground service gets killed while idle and `START_STICKY` isn't honored, so the curfew silently stops until someone re-arms by hand. A schedule lock that needs manual re-arming isn't a real lock (the long-carried "self-healing daemon" TODO from v1).
+
+Fix — an `AlarmManager`-based watchdog (new `Watchdog.kt` + `WatchdogReceiver.kt`):
+- `setAndAllowWhileIdle` alarm every ~15 min. Alarms live in the system AlarmManagerService, **not the app process**, so they keep firing after the OS kills NightOwl.
+- Each tick: if `EnforcementService.armed` is false (service down), restart it; always reschedule the next tick. Self-perpetuating across process deaths.
+- `setAndAllowWhileIdle` chosen deliberately: fires through Doze, no `SCHEDULE_EXACT_ALARM` permission, and qualifies for the alarm-fired foreground-service-start exemption on Android 12+.
+- Kicked off from `EnforcementService.onStartCommand` (arming) and re-armed in `BootReceiver` (reboot cancels alarms). `WatchdogReceiver` declared `exported="false"`.
+
+**Verified on the Mi 9 Lite:** `dumpsys alarm` shows `*walarm*:com.nightowl.WATCHDOG_TICK` registered (RTC_WAKEUP, broadcast PendingIntent); the receiver fires (`am broadcast … result=0`) and the `!armed` guard correctly no-ops when the service is already up. Could not force a full kill→restore over adb because MIUI blocks the shell from stopping the FGS — but the registered alarm is exactly the mechanism that catches a real MIUI kill.
+
+Known minor wart: the watchdog keeps the FGS alive even after a lock legitimately expires (no active-schedule check, to keep the FGS start inside the alarm exemption window). Acceptable for an always-on enforcement tool; refine later if needed.
+
 ## Distribution
-- New build is `app/build/outputs/apk/release/app-release.apk` (release-signed, non-debuggable, v0.3.4-alpha.1). Tag `android-v0.3.4-alpha.1`; the GitHub release asset behind the bot's `/install android` link updated to this build.
+- Builds are `app/build/outputs/apk/release/app-release.apk` (release-signed, non-debuggable). Latest: **v0.3.5-alpha.1** (versionCode 8) with the watchdog. Tags `android-v0.3.4-alpha.1` and `android-v0.3.5-alpha.1`; the GitHub release asset behind the bot's `/install android` link is kept pointed at the latest build (clobbered on the `android-v0.3.0-alpha.1` asset path so the live bot link needs no redeploy).

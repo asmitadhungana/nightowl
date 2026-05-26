@@ -87,6 +87,9 @@ class EnforcementService : Service() {
         if (pollJob == null) {
             pollJob = scope.launch { pollLoop() }
         }
+        // Kick off the self-healing watchdog so MIUI killing this service later
+        // gets noticed + re-armed without the user touching anything.
+        Watchdog.schedule(applicationContext)
         return START_STICKY
     }
 

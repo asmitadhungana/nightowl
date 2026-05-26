@@ -9,6 +9,8 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             EnforcementService.start(context.applicationContext)
+            // Reboot cancels alarms — re-arm the self-healing watchdog too.
+            Watchdog.schedule(context.applicationContext)
         }
     }
 }

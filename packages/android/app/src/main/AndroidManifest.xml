@@ -55,6 +55,11 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false" />
+
+
         <service
             android:name=".AppBlockerService"
             android:exported="true"
