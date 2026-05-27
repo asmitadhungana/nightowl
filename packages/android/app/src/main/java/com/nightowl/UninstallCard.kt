@@ -41,7 +41,7 @@ fun UninstallCard(
 
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Need to uninstall?", style = MaterialTheme.typography.titleMedium)
+            SectionHeader("🚪", "Need to uninstall?")
             Text(
                 "You handed your password to ${state.friendName ?: "your friend"}. Ask them to /approve via Telegram, " +
                     "or start a 72-hour emergency cooldown that releases the lock without them.",

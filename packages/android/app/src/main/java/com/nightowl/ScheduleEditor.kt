@@ -54,7 +54,7 @@ fun ScheduleEditor(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Schedule", style = MaterialTheme.typography.titleMedium)
+            SectionHeader("🌙", "Schedule")
             Text(
                 "Set a curfew for each day. Off days are blank. Overnight curfews " +
                     "(e.g. 22:00 → 06:00) wrap automatically.",
@@ -100,7 +100,7 @@ fun ScheduleEditor(
                 }
             }
             Text(
-                "Timezone: ${state.editorTimezone}",
+                "Curfew uses this phone's local time · ${java.util.TimeZone.getDefault().id}",
                 style = MaterialTheme.typography.bodySmall,
             )
 

@@ -33,7 +33,7 @@ fun AllowlistCard(
 ) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("App blocker allowlist", style = MaterialTheme.typography.titleMedium)
+            SectionHeader("📋", "App blocker allowlist")
             Text(
                 "Apps you can still open during curfew + focus. NightOwl, the dialer, Settings, system UI, " +
                     "and launchers are always allowed and not shown.",

@@ -36,13 +36,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            NightOwlTheme {
                 NightOwlScaffold()
             }
         }
@@ -80,14 +88,8 @@ private fun Home(padding: PaddingValues) {
             .verticalScroll(scroll),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("🦉 NightOwl Android — alpha", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            "Pair with your locker over Telegram, set per-day curfew, and lock it in. " +
-                "During curfew the screen re-locks and non-essential apps bounce back to home.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-
-        StatusCard(state = state)
+        NightOwlHeader()
+        HeroStatusBanner(state = state)
         PermissionsCard(state = state, onGrantDeviceAdmin = { requestDeviceAdmin(ctx) }, onGrantAccessibility = { AppBlockerService.openSettings(ctx) })
         PairingCard(state = state, onEnroll = { vm.enroll() })
         ScheduleEditor(
@@ -132,18 +134,114 @@ private fun Home(padding: PaddingValues) {
 }
 
 @Composable
-private fun StatusCard(state: HomeState) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Status", style = MaterialTheme.typography.titleMedium)
-            Text("Pairing phase: ${state.phase?.name ?: "(not enrolled)"}")
-            state.friendName?.let { Text("Locker: $it") }
-            Text("Lock active: ${if (state.savedSchedule.active) "YES until ${state.savedSchedule.lockEndDate}" else "no"}")
-            if (state.savedSchedule.enforcementPaused) {
+private fun NightOwlHeader() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("🦉", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            "NightOwl",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+    }
+}
+
+/** Big, gradient, at-a-glance state: armed badge + curfew window + live countdown. */
+@Composable
+private fun HeroStatusBanner(state: HomeState) {
+    val armed by EnforcementService.armed.collectAsState()
+    val paused = state.savedSchedule.enforcementPaused
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    val curfew = remember(state.savedSchedule, nowMs) { computeCurfewView(state.savedSchedule, nowMs) }
+
+    val badgeText: String
+    val badgeColor: Color
+    when {
+        paused -> { badgeText = "⏸  PAUSED BY LOCKER"; badgeColor = NightOwlPaused }
+        armed -> { badgeText = "●  ARMED"; badgeColor = NightOwlArmed }
+        else -> { badgeText = "●  NOT ARMED"; badgeColor = NightOwlAlert }
+    }
+    val headline = when {
+        paused -> "Curfew paused"
+        curfew.curfewingNow -> "Locked down"
+        state.savedSchedule.active -> "Curfew armed"
+        else -> "No curfew yet"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(NightOwlHeroGradient)
+            .padding(20.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(badgeText, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = badgeColor)
+            Text(headline, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(curfew.windowLabel, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFE3DBFB))
+            curfew.countdown?.let {
+                Text(it, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = Color.White)
+            }
+            if (state.savedSchedule.active && state.savedSchedule.lockEndDate != null) {
+                val by = state.friendName?.let { " · held by $it" } ?: ""
                 Text(
-                    "⏸ Paused by your locker — curfew won't lock until they /resume.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
+                    "Locked in until ${state.savedSchedule.lockEndDate!!.take(10)}$by",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFCFC4F2),
+                )
+            }
+        }
+    }
+}
+
+private data class CurfewView(val curfewingNow: Boolean, val windowLabel: String, val countdown: String?)
+
+/** Curfew state for the hero, evaluated in the DEVICE-LOCAL zone (see A07 fix). */
+private fun computeCurfewView(s: Schedule, nowMs: Long): CurfewView {
+    if (!s.active) return CurfewView(false, "Set a schedule and lock it in to begin.", null)
+    val now = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(nowMs), java.time.ZoneId.systemDefault())
+    val dayKey = now.dayOfWeek.name.lowercase()
+    val today = s.days[dayKey]
+    val curfewing = s.isCurfewActive(dayKey, "%02d:%02d".format(now.hour, now.minute))
+    val window = if (today?.curfewStart != null && today.curfewEnd != null) "${today.curfewStart}–${today.curfewEnd}" else null
+    if (curfewing) {
+        return CurfewView(true, today?.curfewEnd?.let { "Unlocks at $it" } ?: "Curfew active now", null)
+    }
+    val countdown = today?.curfewStart?.let { st ->
+        val parts = st.split(":")
+        val h = parts.getOrNull(0)?.toIntOrNull()
+        val m = parts.getOrNull(1)?.toIntOrNull()
+        if (h != null && m != null) {
+            var target = now.withHour(h).withMinute(m).withSecond(0).withNano(0)
+            if (!target.isAfter(now)) target = target.plusDays(1)
+            val mins = java.time.Duration.between(now, target).toMinutes()
+            "Curfew in ${mins / 60}h ${mins % 60}m"
+        } else null
+    }
+    return CurfewView(false, window?.let { "Nightly curfew $it" } ?: "Curfew armed", countdown)
+}
+
+@Composable
+private fun PermissionsCard(state: HomeState, onGrantDeviceAdmin: () -> Unit, onGrantAccessibility: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionHeader("🔐", "Permissions")
+            PermissionRow("Device admin", state.deviceAdminActive, onGrantDeviceAdmin)
+            PermissionRow("App blocker (Accessibility)", state.accessibilityActive, onGrantAccessibility)
+            if (!state.accessibilityActive) {
+                Text(
+                    "Without the app blocker, curfew only re-locks the screen — apps still open between locks.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -151,30 +249,18 @@ private fun StatusCard(state: HomeState) {
 }
 
 @Composable
-private fun PermissionsCard(state: HomeState, onGrantDeviceAdmin: () -> Unit, onGrantAccessibility: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Permissions", style = MaterialTheme.typography.titleMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Device admin: ${if (state.deviceAdminActive) "✓" else "✗"}", style = MaterialTheme.typography.bodyMedium)
-                if (!state.deviceAdminActive) {
-                    TextButton(onClick = onGrantDeviceAdmin) { Text("Grant") }
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "App blocker (Accessibility): ${if (state.accessibilityActive) "✓" else "✗"}",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (!state.accessibilityActive) {
-                    TextButton(onClick = onGrantAccessibility) { Text("Grant") }
-                }
-            }
-            if (!state.accessibilityActive) {
-                Text(
-                    "Without the app blocker, curfew only re-locks the screen — apps will still open between locks. Grant accessibility to block app launches during curfew.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+private fun PermissionRow(label: String, granted: Boolean, onGrant: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+        if (granted) {
+            StatusPill("✓ Granted", NightOwlArmed)
+        } else {
+            Button(onClick = onGrant, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp)) {
+                Text("Grant")
             }
         }
     }
@@ -184,7 +270,7 @@ private fun PermissionsCard(state: HomeState, onGrantDeviceAdmin: () -> Unit, on
 private fun PairingCard(state: HomeState, onEnroll: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Friend Lock", style = MaterialTheme.typography.titleMedium)
+            SectionHeader("👥", "Friend Lock")
             val locker = state.friendName ?: "your friend"
             when {
                 state.phase == DelegationPhase.active ->
@@ -215,8 +301,12 @@ private fun PairingCard(state: HomeState, onEnroll: () -> Unit) {
                 else ->
                     Text("Not enrolled yet. Generate a pair code to begin.", style = MaterialTheme.typography.bodySmall)
             }
-            Button(onClick = onEnroll, enabled = state.pairCode == null && state.pairingId == null) {
-                Text("Generate pair code")
+            // Only offer enrollment before there's a pairing — a dead/disabled button
+            // once paired just reads as clutter.
+            if (state.pairCode == null && state.pairingId == null) {
+                Button(onClick = onEnroll) {
+                    Text("Generate pair code")
+                }
             }
         }
     }
@@ -228,15 +318,12 @@ private fun EnforcementCard(onArm: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("Enforcement service", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (armed) "● ARMED" else "● NOT ARMED",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (armed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                )
+                SectionHeader("🛡️", "Enforcement")
+                StatusPill(if (armed) "● ARMED" else "● NOT ARMED", if (armed) NightOwlArmed else NightOwlAlert)
             }
             Text(
                 if (armed) {

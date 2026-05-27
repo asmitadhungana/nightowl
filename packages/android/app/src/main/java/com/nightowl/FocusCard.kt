@@ -46,7 +46,7 @@ fun FocusCard(
 
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Focus Mode", style = MaterialTheme.typography.titleMedium)
+            SectionHeader("🎯", "Focus Mode")
 
             if (!active) {
                 FocusStartUi(canFriendGate = state.phase == DelegationPhase.active, onStart = onStart)
