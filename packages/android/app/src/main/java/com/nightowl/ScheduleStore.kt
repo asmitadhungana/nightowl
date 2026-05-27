@@ -86,7 +86,10 @@ data class Schedule(
     val active: Boolean = false,
     val lockEndDate: String? = null,
     val days: Map<String, DaySchedule> = emptyMap(),
-    val timezone: String = "UTC",
+    // Blank by default so the editor fills it with the DEVICE zone (the old "UTC"
+    // default silently evaluated curfew in UTC). Enforcement uses the device-local
+    // zone directly regardless; this just keeps the stored value honest.
+    val timezone: String = "",
     val delegation: DelegationState? = null,
     /**
      * User-managed additions to [AppBlockerService.HARDCODED_ALLOWLIST]. The defaults

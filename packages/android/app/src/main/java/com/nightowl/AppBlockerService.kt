@@ -67,8 +67,9 @@ class AppBlockerService : AccessibilityService() {
         if (pkg in effectiveAllowlist) return
 
         val curfewing = if (sched.active) {
-            val zone = runCatching { ZoneId.of(sched.timezone.ifBlank { "UTC" }) }.getOrDefault(ZoneId.of("UTC"))
-            val now = LocalDateTime.now(zone)
+            // Device-local zone, not the stored schedule.timezone (which defaulted to
+            // "UTC" and shifted the curfew +5:45h on Asia/Kathmandu). See EnforcementService.
+            val now = LocalDateTime.now(ZoneId.systemDefault())
             val dayKey = now.dayOfWeek.name.lowercase()
             val hhmm = "%02d:%02d".format(now.hour, now.minute)
             sched.isCurfewActive(dayKey, hhmm)

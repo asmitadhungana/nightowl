@@ -163,15 +163,17 @@ class EnforcementService : Service() {
 
     private fun curfewActive(sched: Schedule): Boolean {
         if (!sched.active) return false
-        val now = LocalDateTime.now(zoneOf(sched.timezone))
+        // Evaluate the curfew window in the DEVICE'S local timezone — NOT the stored
+        // schedule.timezone, which defaulted to "UTC" and was never reliably set to
+        // the device zone. On a +5:45 device (Asia/Kathmandu) the UTC eval shifted a
+        // 23:00–05:00 curfew to ~04:45–10:45 local. The curfew is a local wall-clock
+        // bedtime, so device-local is both the fix and the correct semantic.
+        val now = LocalDateTime.now(ZoneId.systemDefault())
         return sched.isCurfewActive(
             dayKey = now.dayOfWeek.name.lowercase(),
             nowHHMM = "%02d:%02d".format(now.hour, now.minute),
         )
     }
-
-    private fun zoneOf(tz: String): ZoneId =
-        runCatching { ZoneId.of(tz.ifBlank { "UTC" }) }.getOrDefault(ZoneId.of("UTC"))
 
     private fun buildNotification(): android.app.Notification {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

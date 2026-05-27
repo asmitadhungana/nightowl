@@ -21,8 +21,8 @@ android {
         applicationId = "com.nightowl"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.3.8-alpha.1"
+        versionCode = 12
+        versionName = "0.3.9-alpha.1"
     }
 
     signingConfigs {
