@@ -144,11 +144,11 @@ bash nightowl.sh test
 - Keep it simple — this is a single-user tool
 
 ## Important Constraints
-- **macOS only** — uses launchd, osascript, macOS shutdown commands
-- **Requires root for daemon** — enforcement must run as root to prevent user bypass
+- **macOS only in v1** — v1 daemon uses launchd, osascript, macOS shutdown commands. **v3 adds Windows** via a Task Scheduler-launched `nightowld.exe` (cross-built from macOS via `@yao-pkg/pkg`). See the v3 section below.
+- **Requires root for daemon on macOS** — enforcement must run as root to prevent user bypass. **Windows daemon runs as the user** (Task Scheduler, not Windows Service) — Session 0 forces this trade-off; see v3 section.
 - **Node.js required** — for web server
 - **Python3 required** — used by daemon for timezone-aware time calculations
-- **No external services** — everything runs locally
+- **No external services for v1** — everything runs locally. **Narrowly relaxed in v2** for Friend Lock (Telegram bot + Cloudflare Worker, see the v2 section below). Anything beyond friend-mediated password delivery should still default to local.
 - **The whole point is to be hard to bypass** — don't add easy escape hatches
 
 ## Default Schedule
@@ -159,3 +159,111 @@ bash nightowl.sh test
   "timezone": "Asia/Kathmandu"
 }
 ```
+
+---
+
+## v2 — Friend Lock (alpha, branch `feat/v2-friend-lock-alpha`)
+
+NightOwl v2's headline is **Friend Lock**: a friend sets the lock password via a Telegram bot, so the primary user literally doesn't have the key to their own machine. Asymmetric by design — primary user picks the schedule, lock duration, and friend; friend only holds the password and gates uninstall.
+
+```
+packages/
+├── shared/      # @nightowl/shared — types + Ed25519 identity + delegation lifecycle predicates
+├── bot/         # @nightowl/bot — Cloudflare Worker; Telegram webhook + /desktop/* endpoints
+├── desktop/     # @nightowl/desktop — Electron main + renderer; main/friendlock.ts is the orchestrator
+└── daemon/      # legacy v1 daemon (untouched in v2)
+```
+
+### Load-bearing invariants
+
+If a future request would relax any of these, push back. These are the rules that make Friend Lock meaningfully hard to bypass.
+
+- **Plaintext password** lives only in the friend's Telegram client and the Worker isolate (where it is bcrypted before any KV write or log). The desktop only ever sees the bcrypt hash.
+- **Every bot↔desktop message is Ed25519-signed.** Bot pubkey (`BOT_PUBKEY_HEX`) is baked into the desktop build; a compromised Worker can drop messages but cannot forge them. Replay defense: per-pairing `lastConsumedSeq`.
+- **Friend powers are scoped:** set initial password, /approve|/deny uninstall, /revoke. Friend canNOT extend lock duration, modify the schedule, change the password mid-lock, or be swapped for a more compliant friend mid-lock.
+- **`/revoke` is forward-looking — past approvals stand.** Once the friend has /approve'd an uninstall request, /revoke does NOT retract that approval; the user can still uninstall on the prior decision. The bot's revoke text is "you won't be *asked* to approve uninstall" (future tense). Allowing retraction would let a friend under social pressure trap the user — defangs the asymmetry. The locked-screen UI surfaces both facts when this state arises.
+- **Approvals are scoped per request kind — one /approve does NOT cross-bless other actions.** Friend approving an uninstall request does not also green-light an early focus release, and vice versa. Each `kind` on the bot side maps to a distinct signed message kind on the wire and a distinct verdict store on the desktop side (`delegation.lastUninstallDecision` vs `focus.lastReleaseDecision`). When adding a new approval kind, do the same — never share a verdict slot.
+- **72h emergency uninstall cooldown is the safety net AND is non-cancellable** once started. Cancellable would defang it under social pressure (hostile-friend scenario).
+- **`uninstallGate(schedule)` in `packages/shared/src/delegation.ts` is the single source of truth** for "may the user uninstall right now?" Both the desktop API gate and the renderer UI consume it. Don't duplicate the branching elsewhere.
+
+### Per-milestone history → `changes/`
+
+Each milestone has a file in `changes/M<NN>-*.md` covering file-by-file changes, deferred work, and any operational gotchas. M1–M5 are also one git commit each; M6 onward lives entirely in `changes/`.
+
+- **M1–M4** — shared foundation, Worker bot, desktop orchestrator, renderer pairing wizard (commits `ee27cbf` → `aedef53`)
+- **M5** — first Worker deploy (Cloudflare upload, no commit)
+- **M6** — uninstall request flow + 72h cooldown + `/revoke` `/approve` `/deny` + delegated `daemon:uninstall` gating
+- **M7** — Friend Focus integration: opt-in friend-gated Focus sessions; same friend, distinct approval scope; new bot endpoint `/desktop/request-focus-release` + signed `focus_release_decision` message kind
+
+For first-time bot bring-up, see `RUNBOOK.md §8`.
+
+### Paths intentionally NOT taken
+
+Refused options with reasons. If a future request asks for one of these, surface the reason rather than silently agreeing.
+
+- **M-of-N friends** — v3 candidate; adds a key-management story v2 doesn't need.
+- **In-app peer-to-peer (no Telegram)** — v3 candidate; needs NAT traversal + companion app + push.
+- **Friend can extend lock / modify schedule / re-set password mid-lock** — caps hostage risk if the friend turns hostile.
+- **Letting the user re-pair while a lock is active** — would let the user race the friend by swapping in a more compliant friend.
+- **Rolling delegation that auto-renews** — re-pair to renew; auto-renew blurs the "user proposes, friend ratifies" line.
+- **Telegram username as friend identifier** — handles change; we use the immutable `chat_id`.
+- **Forwarding the friend's password to the desktop in cleartext** — defeats Friend Lock entirely.
+- **Cancellable emergency cooldown** — defangs the safety net under social pressure.
+- **Auto-uninstall when the cooldown elapses** — cooldown enables uninstall; user still has to click. Surprise auto-uninstall would lose work.
+
+### Open work
+
+- Set `TG_BOT_TOKEN` Worker secret and run the first real-Telegram E2E (see `RUNBOOK.md §8`).
+- Bot integration tests — `packages/bot` currently has only a placeholder test script.
+- ~~Bake a hosted Worker URL into `BOT_URL`~~ — done in v2.0.0 polish. `packages/shared/src/identity.ts:BOT_URL` defaults to `https://nightowl-bot.asmee-dh-work.workers.dev`; self-hosters override via `NIGHTOWL_BOT_URL`. The packaged-build localhost warning in `main/index.ts` is retained for stale-env-var detection.
+- Self-healing daemon (carried over from v1 — see "Critical #5" above; not blocking v2).
+
+---
+
+## v3 — Windows Lock (alpha, branch `feat/v2-friend-lock-alpha` through W3)
+
+Windows port of NightOwl. v2 Friend Lock + Friend Focus are OS-agnostic by construction (Cloudflare Worker bot, Ed25519, the pairing dance) — the only platform-specific layer is the enforcement daemon. v3 ships that for Windows.
+
+### Architecture
+
+```
+nightowld.exe  (PE32+ x86-64, ~41 MB, self-contained Node + bundled CJS)
+   ↑ tsc → esbuild --bundle --format=cjs --external:bcrypt → @yao-pkg/pkg
+   ↑ packages/daemon/src/{index,core,windows,macos}/*
+
+Registered via Windows Task Scheduler as `NightOwlDaemon`:
+   - LogonTrigger as the user (NOT SYSTEM)
+   - 1-minute repetition + MultipleInstancesPolicy=IgnoreNew (watchdog)
+   - RunLevel=LeastPrivilege, LogonType=InteractiveToken (user session)
+```
+
+The desktop's `installDaemon` IPC on Windows generates the Task XML, writes a temp `.bat` that does `mkdir + copy + schtasks /Create /XML /F + schtasks /Run`, and invokes that .bat via `sudo-prompt`. Single UAC prompt for the user.
+
+### Load-bearing decisions
+
+If a future request would relax any of these, push back.
+
+- **Task Scheduler, NOT Windows Service.** Services run in Session 0 — toast notifications never reach the user's desktop. The 45/15-second warning UX collapses to a silent kill. Realistic threat model is post-login bypass, which is exactly what Task-Scheduler-as-user covers.
+- **Daemon binary is cross-built from macOS via `@yao-pkg/pkg`.** Reproducible, single command. `pkg` (the original) is unmaintained; `node-windows` adds a shipped runtime dep that we'd then have to maintain.
+- **bcrypt is lazy-loaded in `@nightowl/shared/crypto.ts`** so the daemon bundle has no native dependencies. Verified `grep -c bcrypt dist/nightowld.cjs` → 0. The shape of `hashPassword` / `verifyPassword` is unchanged for callers.
+- **Dry-run mode passes through `--dry-run` CLI arg**, not env vars. Task Scheduler XML's `<Exec>` action has no clean env-var injection on a `<Command>`. The daemon entry parses argv into `process.env.NIGHTOWL_DRY_RUN` so the enforcement-loop reads a single source.
+- **`lockScheduleFile()` is a no-op on win32.** With daemon-as-user, any ACL it could set the user can unset — meaningful tamper-resistance requires either SYSTEM (Session 0 again) or per-activation UAC elevation. Deferred to W2; do NOT add a half-functional icacls call.
+
+### Per-milestone history → `changes/`
+
+- **W1** (this milestone, 2026-05-12) — `nightowld.exe` cross-build pipeline, Task Scheduler registration via `privileged.ts`, `scripts/install-dev.ps1`, `scripts/build-win.sh` standalone NSIS builder, RUNBOOK §9 covering install + Friend-Lock-on-Windows parity. No tamper resistance, no live-on-metal validation, no signed installer.
+
+### Paths intentionally NOT taken (in addition to v2's list)
+
+- **Running the daemon as SYSTEM with a user-mode helper.** Closes the tamper-resistance gap but doubles the moving parts. Promote later only if W3 metal-testing exposes user-deletes-the-task as a real-world bypass.
+- **`getConsoleUser` Windows sibling.** macOS needs it because launchd runs daemon as root and we need to find the actual GUI user. Windows Task Scheduler runs the daemon AS the user, so `os.userInfo().username` is already correct; an extra layer would be dead code.
+- **Code signing the NSIS installer.** ~$200/yr cost, SmartScreen reputation takes weeks to build. Friends acknowledge the unsigned warning during W3 testing.
+- **Filesystem-level tamper-resistance on `schedule.json` in W1.** See the load-bearing decision above; W2 will revisit.
+- **Universal x86-64 + ARM64 .exe.** ARM64 Windows install base is tiny; we ship x64 only.
+
+### Open work
+
+- **W2** — toast UX polish, decide on UAC-on-activation for `schedule.json` lockdown, validate dry-run path against real Defender behavior.
+- **W3** — first live install on real Windows hardware. Bot pair + setpassword + uninstall request + Friend Focus E2E. RUNBOOK §9 already has the script.
+- Self-healing daemon — still carried from v1, still not blocking.
+

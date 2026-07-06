@@ -181,3 +181,251 @@ After this, the daemon WILL run `halt -q` when curfew fires. There is no inline 
 - **Code signing / notarization** — Electron app is not signed. Distribution to other users would hit Gatekeeper warnings.
 - **Daemon binary bundling** — daemon ships as a Node script + node_modules, not a single executable. Production distribution would want esbuild or `@yao-pkg/pkg` for a single-binary install.
 - **Windows** — code paths exist but untested in this pass; macOS only.
+
+## 8. v2 Friend Lock — first-time bot bring-up (alpha)
+
+**Status as of v2.0.0:** the Cloudflare Worker is deployed at `https://nightowl-bot.asmee-dh-work.workers.dev` and all three secrets are set (`TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET`, `BOT_ED25519_PRIVKEY` — confirm with `npx wrangler secret list` from `packages/bot/`). The instructions below stay here for self-hosters and for re-deploys; if you're just running the app, **skip to §8.1 Pre-flight checks** and then §8.3 to drive a session with your friend.
+
+### 8.1 Pre-flight checks (run before every friend-coordination session)
+
+```bash
+# 1. Worker is alive
+curl -sS https://nightowl-bot.asmee-dh-work.workers.dev/healthz
+# expect: ok
+
+# 2. Telegram webhook is pointed at the Worker. Substitute your bot token from
+#    @BotFather (NEVER paste this in shell history — store in a file, then delete):
+TG_TOKEN=$(cat ~/.nightowl-bot-token)   # or wherever you keep it
+curl -sS "https://api.telegram.org/bot$TG_TOKEN/getWebhookInfo" | python3 -m json.tool
+# expect: "url" field matches the Worker /tg/webhook/<secret> path,
+#         "pending_update_count" near 0, "last_error_date" absent or stale
+
+# 3. (Optional) Tail live Worker logs while you test:
+#    from a second terminal in packages/bot/
+npx wrangler tail
+# Anything that hits the Worker — /healthz, /tg/webhook, /desktop/* — shows up here.
+```
+
+If any of the three fail, fix before running the friend session — silent failures during pairing are the most confusing UX surface in v2.
+
+### 8.2 Self-hoster setup (first-time bot deploy)
+
+If you're standing up your own Worker rather than using the hosted one above, you need to:
+
+```bash
+cd packages/bot
+
+# 1. Confirm what's set today (you should see exactly TG_WEBHOOK_SECRET + BOT_ED25519_PRIVKEY)
+npx wrangler secret list
+
+# 2. Get a bot token from @BotFather on Telegram (one-time)
+#    Send @BotFather: /newbot  → pick a name → pick a username → save the token
+
+# 3. Set it as a Worker secret.
+#
+#    IMPORTANT: `wrangler secret put` reads the value from STDIN, NOT from argv.
+#    Putting the token on the same command line will fail with
+#       ✘ [ERROR] Unknown argument: <token>
+#    and (worse) wrangler logs the full argv on error to
+#    ~/Library/Preferences/.wrangler/logs/wrangler-*.log — meaning your token
+#    just landed in a file. If you do this by accident: revoke the token via
+#    @BotFather (/revoke), delete the offending log file, and clear shell history.
+#
+#    Correct forms:
+npx wrangler secret put TG_BOT_TOKEN
+# wrangler prints "? Enter a secret value:" — paste the token there, hit Enter.
+
+# Or, pipe from a file you delete right after (avoids shell history capture):
+echo -n "<your-bot-token>" > /tmp/tgtok && \
+  npx wrangler secret put TG_BOT_TOKEN < /tmp/tgtok && \
+  rm /tmp/tgtok
+
+# 4. Confirm the deployed URL
+npx wrangler deployments status
+# look for the workers.dev URL in the output (or check the Cloudflare dashboard)
+
+# 5. Point Telegram at it (replace <TOKEN>, <WORKER_URL>, <SECRET>).
+#    Use the SAME TG_WEBHOOK_SECRET value you set earlier — wrangler doesn't
+#    surface it back. If you've forgotten it, rotate: `wrangler secret put
+#    TG_WEBHOOK_SECRET < /tmp/sec` with a fresh `openssl rand -hex 32`, then
+#    re-run the setWebhook below with the new value.
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<WORKER_URL>/tg/webhook/<SECRET>"
+# expect: {"ok":true,"result":true,"description":"Webhook was set"}
+
+# 6. Smoke-test from the Telegram client: DM the bot /help. You should get HELP_MESSAGE back.
+#    If nothing comes back, `npx wrangler tail` from packages/bot/ to see live
+#    request logs from the Worker.
+```
+
+Once the bot replies to `/help`, the desktop side can be brought up:
+
+```bash
+NIGHTOWL_BOT_URL=https://<WORKER_URL> npm run dev:desktop
+```
+
+If you're using the **hosted Worker** (the default since v2.0.0), `NIGHTOWL_BOT_URL` is unnecessary — `shared/src/identity.ts` bakes the URL in. Set it only when pointing at a local `wrangler dev` or a self-hosted Worker.
+
+### 8.3 Friend-coordination session (driving an actual pair → setpassword → uninstall flow)
+
+In the renderer: switch the lock-mode toggle to **Friend**, click **Generate Pair Code**, hand the 8-char code to a friend (or yourself in a second Telegram account), have them DM the bot `/pair <CODE>` then `/setpassword <PW>`. Within ~10 seconds the desktop should transition `enrolled → paired → awaiting_password → active` and the lock activates.
+
+**Diagnostic signals during the session:**
+
+- The pairing modal now surfaces a `⚠ Last warning` chip whenever a bot message is dropped (bad signature, replay, malformed payload). If the pairing seems stuck in `awaiting_password`, look at the chip first — it tells you whether the desktop is hearing the bot at all.
+- `npx wrangler tail` from `packages/bot/` shows live Worker logs including each `/desktop/poll` hit. Useful for cross-checking when the chip says something dropped.
+- The Telegram client shows the friend's `/setpassword` got `✓ Password sent` — that confirms the bot accepted it. Anything past that point is a desktop-side issue.
+
+**If the desktop logs `bot unreachable`:** check internet, then `curl /healthz` per §8.1. If the hosted Worker is the issue (rare — it's a Cloudflare Worker, so uptime is near 100%), the maintainer needs to redeploy.
+
+### 8.4 Exercising the uninstall path safely
+
+The uninstall flow (Ask friend → /approve → Uninstall now) actually **uninstalls the daemon and tears down the active lock.** For dry-run testing during friend coordination, set `NIGHTOWL_UNINSTALL_DRY_RUN=1` in the desktop's environment before launching:
+
+```bash
+NIGHTOWL_UNINSTALL_DRY_RUN=1 npm run dev:desktop
+# or, in a packaged build:
+NIGHTOWL_UNINSTALL_DRY_RUN=1 open /Applications/NightOwl.app
+```
+
+With this set, the **Uninstall now** button still walks the entire IPC + delegation-clearing path (so you can verify the friend-approval flow end-to-end), but `daemon:uninstall` short-circuits to `ok` instead of actually invoking launchd. The active schedule lock stays intact. Use this for the first dry-run with your friend; clear the env var when you want a real install/uninstall cycle.
+
+`NIGHTOWL_UNINSTALL_DRY_RUN` is the sibling of `NIGHTOWL_DRY_RUN`, which gates the daemon's `halt` action — same idea, different layer.
+
+---
+
+## 9. v3 Windows Lock — first-time install on Windows (alpha)
+
+Windows port lives behind the same desktop UI / Friend Lock flow as macOS. The only platform-specific piece is the daemon: macOS uses a launchd plist running as root, Windows uses a Scheduled Task running as the user (Session 0 forces the user-session split — see `CLAUDE.md` v3 section for the architectural rationale).
+
+### 9.1 Cross-build the Windows artifacts on macOS
+
+The `nightowld.exe` daemon binary is produced from macOS via esbuild + `@yao-pkg/pkg`:
+
+```bash
+# From the monorepo root
+npm install
+npm run package:win -w packages/daemon
+
+# Verify the produced binary
+file packages/daemon/dist/nightowld.exe
+#  → PE32+ executable (console) x86-64, for MS Windows
+```
+
+The .exe is ~41 MB, self-contained (Node runtime + bundled daemon code; no external deps because `bcrypt` is lazy-loaded in `@nightowl/shared/crypto.ts` and the daemon never calls password functions).
+
+For an end-to-end NSIS installer that friends can download and run:
+
+```bash
+npm run package:win:installer
+# → produces dist/NightOwl-Setup-<version>.exe (unsigned)
+```
+
+Unsigned means Windows SmartScreen will flag it on first run. Friends will see "Windows protected your PC" — they click **More info** → **Run anyway**.
+
+### 9.2 Friend-side install (the .exe path)
+
+What friends actually need to do once they have `NightOwl-Setup-<version>.exe`:
+
+1. Right-click → **Run as administrator** (UAC is required so the installer can create the Scheduled Task).
+2. Click through the NSIS wizard. Default install path is `C:\Users\<name>\AppData\Local\Programs\NightOwl`.
+3. Launch NightOwl from the Start Menu.
+4. In the app, click **Install Daemon** when prompted. A second UAC dialog appears — the desktop is registering the Scheduled Task via `schtasks /Create /XML`.
+5. Verify the daemon is running:
+
+   ```powershell
+   schtasks /Query /TN NightOwlDaemon /FO LIST
+   # Status: Running
+   Get-Content $env:PROGRAMDATA\NightOwl\nightowl.log -Tail 20
+   ```
+
+6. Configure the schedule + lock duration in the UI, pair with a friend's Telegram bot (same flow as §8.2 — the bot doesn't care about OS), and **Lock It In**.
+
+### 9.3 Developer install (no NSIS, fast iteration)
+
+For us — and for developer friends — testing with a cloned repo:
+
+```powershell
+# From any PowerShell (elevated or not), in the repo root.
+# The script auto-elevates via UAC if needed.
+.\scripts\install-dev.ps1            # dry-run mode (safe — warnings fire, no shutdown)
+.\scripts\install-dev.ps1 -Enforce   # actually shuts down on curfew (asks for "yes" confirmation)
+.\scripts\install-dev.ps1 -Uninstall # remove the task
+```
+
+If PowerShell's execution policy blocks the .ps1 file (`script.ps1 cannot be loaded because running scripts is disabled on this system`), use the explicit bypass form — execution policy is scoped to the child process, nothing is persisted:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dev.ps1
+```
+
+The script:
+- Self-elevates if you're not already in an admin shell — triggers exactly one UAC prompt, then everything (build + register + start) runs in the elevated child.
+- Builds the daemon if `packages\daemon\dist\nightowld.exe` is missing (runs `npm install` + `npm run package:win -w packages/daemon`).
+- Generates a Task Scheduler XML pointing at the dev `.exe` (NOT `%PROGRAMDATA%\NightOwl\` — that's the production install location).
+- Registers the task as `NightOwlDaemon` running as the current user, logon trigger + 1-minute repetition.
+- Starts the task immediately so you can `Get-Content $env:PROGRAMDATA\NightOwl\nightowl.log -Wait` and watch decisions.
+
+**Friend-of-developer setup (one-shot, no further explanation needed):**
+
+```powershell
+git clone https://github.com/asmeedhungana/nightowl.git
+cd nightowl
+git checkout feat/v2-friend-lock-alpha
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dev.ps1
+```
+
+Three lines, one UAC prompt, ~2-minute build, dry-run-safe daemon registered.
+
+### 9.4 Drop a test schedule
+
+The daemon reads `%APPDATA%\NightOwl\schedule.json`. To force an immediate dry-run enforcement (without using the UI):
+
+```powershell
+$schedulePath = "$env:APPDATA\NightOwl\schedule.json"
+New-Item -ItemType Directory -Force -Path (Split-Path $schedulePath) | Out-Null
+@"
+{
+  "active": true,
+  "lockPeriodDays": 1,
+  "lockStartDate": "2026-05-12T00:00:00.000Z",
+  "lockEndDate": "2026-05-13T00:00:00.000Z",
+  "days": {
+    "monday":    { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "tuesday":   { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "wednesday": { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "thursday":  { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "friday":    { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "saturday":  { "curfewStart": "00:00", "curfewEnd": "23:59" },
+    "sunday":    { "curfewStart": "00:00", "curfewEnd": "23:59" }
+  },
+  "timezone": "America/New_York",
+  "user": "$env:USERNAME"
+}
+"@ | Set-Content -Path $schedulePath -Encoding UTF8
+```
+
+Within ~60 s the daemon's log should show `CURFEW ACTIVE` followed by the 45-second toast notification firing (look for the Windows action center toast). In dry-run mode it logs `[DRY-RUN] Would shutdown` and stops there.
+
+### 9.5 Friend Lock on Windows (same as macOS)
+
+The Friend Lock pairing + uninstall-approval flow is OS-agnostic. After the daemon is registered (§9.2 or §9.3) and the bot is reachable (§8), do exactly what §8.2 says — generate the pair code in the desktop UI, friend DMs the bot `/pair` + `/setpassword`, lock activates. `/approve` of an uninstall request also works identically.
+
+### 9.6 What's NOT in W1
+
+- **Tamper-resistance on `schedule.json`.** The Scheduled Task runs as the user (not SYSTEM), so it has no privilege the user doesn't already have to ACL the file. macOS's `chown root:wheel` equivalent is genuinely hard on Windows without elevating each schedule edit through UAC. See `CLAUDE.md` v3 section "load-bearing invariants" for the W2 plan.
+- **Code signing of the NSIS installer.** Builds today are unsigned → SmartScreen warning on first run. Acquiring a code-signing cert is a v3.5 ops task.
+- **Live-on-metal validation.** The cross-build from macOS produces a valid PE32+ binary, but Defender false-positives on unsigned new-publisher binaries can vary VM vs metal. Friends running the .exe on real hardware are the canary.
+- **`getConsoleUser` Windows sibling.** Not needed — Task Scheduler runs the daemon as the user, so `os.userInfo().username` returns the right value directly. The `getTargetUser()` chain in `packages/daemon/src/core/enforce.ts` falls through correctly without a Windows-specific console-user lookup.
+
+### 9.7 Uninstalling
+
+From the app: click **Uninstall NightOwl** in the Settings panel. The desktop tears down Scheduled Task → kills `nightowld.exe` → deletes the installed `.exe`. `%APPDATA%\NightOwl\` (schedule + focus + pairing state) is intentionally preserved so re-installing is non-destructive.
+
+From the command line:
+
+```powershell
+schtasks /End /TN NightOwlDaemon
+taskkill /F /IM nightowld.exe
+schtasks /Delete /TN NightOwlDaemon /F
+Remove-Item "$env:PROGRAMDATA\NightOwl\nightowld.exe" -Force
+```

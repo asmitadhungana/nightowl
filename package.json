@@ -6,22 +6,28 @@
   "workspaces": [
     "packages/shared",
     "packages/daemon",
-    "packages/desktop"
+    "packages/desktop",
+    "packages/bot"
   ],
   "scripts": {
     "build": "npm run build -ws",
     "build:shared": "npm run build -w packages/shared",
     "build:daemon": "npm run build -w packages/daemon",
     "build:desktop": "npm run build -w packages/desktop",
+    "build:bot": "npm run build -w packages/bot",
     "dev": "npm run build:shared && npm run build:daemon && npm run dev -w packages/desktop",
     "dev:desktop": "npm run dev -w packages/desktop",
     "dev:daemon": "NIGHTOWL_TEST_MODE=1 npm run dev -w packages/daemon",
+    "dev:bot": "npm run dev -w packages/bot",
+    "deploy:bot": "npm run deploy -w packages/bot",
     "test": "npm run test -ws --if-present",
     "test:shared": "npm run test -w packages/shared",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo dist",
     "package": "npm run build && npm run package -w packages/desktop",
     "package:mac": "npm run build && npm run package:mac -w packages/desktop",
     "package:win": "npm run build && npm run package:win -w packages/desktop",
+    "package:mac:installer": "bash scripts/build-mac.sh",
+    "package:win:installer": "bash scripts/build-win.sh",
     "package:dir": "npm run build && npm run package:dir -w packages/desktop"
   },
   "devDependencies": {

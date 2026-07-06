@@ -15,6 +15,8 @@ A macOS daemon that enforces a device curfew by shutting down your computer duri
 
 ## Quick Start
 
+### macOS
+
 ```bash
 # Clone
 git clone https://github.com/asmeedhungana/nightowl.git
@@ -29,6 +31,34 @@ node server.js
 
 # Install as system daemon (enables enforcement)
 sudo bash install.sh
+```
+
+### Windows (alpha — v3 Windows Lock)
+
+**End-users / non-developer friends.** Download `NightOwl-Setup-<version>.exe` from a release link, double-click, click through Windows SmartScreen ("More info" → "Run anyway" — the installer is currently unsigned), then click **Install Daemon** in the app after launch. Done.
+
+**Developer friends (with Node 18+ and git).** From any PowerShell (elevated or not — the script self-elevates):
+
+```powershell
+git clone https://github.com/asmeedhungana/nightowl.git
+cd nightowl
+git checkout feat/v2-friend-lock-alpha
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dev.ps1
+```
+
+That single `install-dev.ps1` invocation:
+1. Auto-elevates via UAC (one prompt).
+2. Runs `npm install` + builds all packages + cross-compiles `nightowld.exe`.
+3. Registers a Scheduled Task running as you (logon trigger + 1-min watchdog).
+4. Starts the daemon in **dry-run mode** (toast warnings fire, no actual shutdown).
+
+To make it actually shut down on curfew, re-run with `-Enforce`. To remove it, `-Uninstall`. Full details + Friend Lock pairing in [RUNBOOK §9](RUNBOOK.md#9-v3-windows-lock--first-time-install-on-windows-alpha).
+
+Build the NSIS installer yourself (e.g. to share with non-developer friends):
+
+```bash
+npm run package:win:installer
+# → dist/NightOwl-Setup-<version>.exe (~150 MB)
 ```
 
 ## How It Works

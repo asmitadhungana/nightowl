@@ -9,6 +9,8 @@ import fs from 'fs';
 import { setupIpcHandlers } from './api.js';
 import { createTray, updateTrayMenu } from './tray.js';
 import { setupAutoLaunch } from './autolaunch.js';
+import { startFriendlockPolling, stopFriendlockPolling } from './friendlock.js';
+import { BOT_URL } from '@nightowl/shared';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -101,6 +103,7 @@ interface AppWithQuit extends Electron.App {
 
 app.on('before-quit', () => {
   (app as AppWithQuit).isQuitting = true;
+  stopFriendlockPolling();
 });
 
 app.whenReady().then(async () => {
@@ -115,6 +118,18 @@ app.whenReady().then(async () => {
 
   // Set up auto-launch
   await setupAutoLaunch();
+
+  // Start polling the bot for delegated-lock messages.
+  // Idempotent — schedules a no-op tick if there's no active delegation.
+  //
+  // BOT_URL defaults to the hosted Worker in shared/src/identity.ts, so a
+  // packaged build pointing at localhost means an explicit NIGHTOWL_BOT_URL
+  // override is in play — almost always a leftover dev shell env that should
+  // be unset before launch. Surface it loudly.
+  if (app.isPackaged && /^https?:\/\/(localhost|127\.|0\.0\.0\.0)/i.test(BOT_URL)) {
+    console.warn(`[friendlock] BOT_URL is "${BOT_URL}" in a packaged build. Looks like a stale NIGHTOWL_BOT_URL override; Friend Lock will not reach the hosted Worker. Unset NIGHTOWL_BOT_URL before launch (see RUNBOOK.md §8).`);
+  }
+  startFriendlockPolling();
 
   // macOS specific - create window on activation if none exist
   app.on('activate', () => {

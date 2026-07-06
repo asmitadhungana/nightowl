@@ -24,11 +24,14 @@ import {
   verifyPassword,
   validatePassword,
   validateSchedule,
+  isDelegated,
+  uninstallGate,
   type Schedule,
   type FocusSession,
   type Status,
 } from '@nightowl/shared';
 import { getDaemonStatus, installDaemon, uninstallDaemon } from './privileged.js';
+import * as friendlock from './friendlock.js';
 
 /**
  * Set up all IPC handlers for renderer communication
@@ -54,6 +57,23 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('daemon:status', handleDaemonStatus);
   ipcMain.handle('daemon:install', handleDaemonInstall);
   ipcMain.handle('daemon:uninstall', handleDaemonUninstall);
+
+  // v2 Friend Lock — alpha set
+  ipcMain.handle('friendlock:enroll', () => friendlock.enroll());
+  ipcMain.handle('friendlock:cancelPairing', () => friendlock.cancelEnrollment());
+  ipcMain.handle('friendlock:getStatus', () => friendlock.getDelegationStatus());
+  ipcMain.handle('friendlock:getLastBotWarning', () => friendlock.getLastBotWarning());
+  // v2 Friend Lock — uninstall gate
+  ipcMain.handle('friendlock:requestUninstall', () => friendlock.requestUninstall());
+  ipcMain.handle('friendlock:cancelPendingUninstallRequest', () => friendlock.cancelPendingUninstallRequest());
+  ipcMain.handle('friendlock:startEmergencyCooldown', () => friendlock.startEmergencyCooldown());
+  ipcMain.handle('friendlock:getUninstallGate', () => friendlock.getUninstallGateStatus());
+
+  // v2.1 Friend Focus — early release gate
+  ipcMain.handle('friendlock:requestFocusRelease', () => friendlock.requestFocusRelease());
+  ipcMain.handle('friendlock:cancelPendingFocusRelease', () => friendlock.cancelPendingFocusRelease());
+  ipcMain.handle('friendlock:endFocusEarly', () => friendlock.endFocusEarly());
+  ipcMain.handle('friendlock:getFocusReleaseGate', () => friendlock.getFocusReleaseGateStatus());
 }
 
 /**
@@ -238,13 +258,18 @@ async function handleGetFocus(): Promise<{
 }
 
 /**
- * Start focus session
+ * Start focus session.
+ *
+ * v2.1: friendGated opts into Friend Focus — the user's paired friend can
+ * /approve early termination via Telegram. Solo focus (default) keeps v1
+ * behavior, uncancellable until the timer runs out. Friend-gated requires a
+ * paired friend (delegation) to exist; otherwise we refuse.
  */
 async function handleStartFocus(
   _event: Electron.IpcMainInvokeEvent,
-  data: { minutes: number }
+  data: { minutes: number; friendGated?: boolean }
 ): Promise<{ ok: boolean; focus?: FocusSession; error?: string }> {
-  const { minutes } = data;
+  const { minutes, friendGated } = data;
 
   // Validate minutes
   if (!minutes || minutes < 1 || minutes > 480) {
@@ -258,8 +283,17 @@ async function handleStartFocus(
     return { ok: false, error: 'Already in curfew' };
   }
 
-  // Create focus session
-  const focus = createFocusSession(minutes);
+  if (friendGated && !isDelegated(schedule)) {
+    return { ok: false, error: 'No friend is paired. Pair a friend first or start a solo focus session.' };
+  }
+
+  // Create focus session — start as a v1 session, then attach friend-gating.
+  const focus: FocusSession = {
+    ...createFocusSession(minutes),
+    friendGated: !!friendGated,
+    pendingReleaseReqId: null,
+    lastReleaseDecision: null,
+  };
   saveFocus(focus);
 
   return { ok: true, focus };
@@ -303,15 +337,37 @@ async function handleDaemonInstall(): Promise<{ ok: boolean; error?: string }> {
 }
 
 /**
- * Uninstall daemon
+ * Uninstall daemon.
+ *
+ * For v1-style self-set locks: verify the user's password.
+ *
+ * For v2 Friend Lock: the user does NOT have the password. The gate is the
+ * friend's approval (delivered via the bot) or the 72h emergency cooldown.
+ * `uninstallGate` is the single source of truth — see packages/shared/src/delegation.ts.
  */
 async function handleDaemonUninstall(
   _event: Electron.IpcMainInvokeEvent,
   data: { password: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const { password } = data;
+  const schedule = loadSchedule();
 
-  // Verify password first
+  if (isDelegated(schedule)) {
+    const gate = uninstallGate(schedule);
+    if (!gate.allowed) {
+      return { ok: false, error: gate.reason };
+    }
+    // Approved or cooldown elapsed — proceed without password.
+    const result = await uninstallDaemon();
+    if (result.ok) {
+      // Clear the delegation so a future re-pair starts fresh.
+      schedule.delegation = null;
+      saveSchedule(schedule);
+    }
+    return result;
+  }
+
+  // Self-set lock path: password gate.
   const hash = loadPasswordHash();
   if (hash) {
     const valid = await verifyPassword(password, hash);

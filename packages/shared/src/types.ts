@@ -2,6 +2,8 @@
  * NightOwl Type Definitions
  */
 
+import type { DelegationState } from './delegation.js';
+
 /** Time string in HH:MM format (e.g., "22:00") */
 export type TimeString = string;
 
@@ -36,6 +38,12 @@ export interface Schedule {
   timezone: string;
   /** Username for this schedule (macOS/Windows username) */
   user?: string;
+  /**
+   * v2 Friend Lock: present when the lock is held by a friend's password
+   * delegated via Telegram bot. Null/absent for self-set locks.
+   * v1 schedule.json files lack this field; loadSchedule treats absent as null.
+   */
+  delegation?: DelegationState | null;
 }
 
 /** Focus mode session */
@@ -48,6 +56,25 @@ export interface FocusSession {
   endTime: string;
   /** Duration in minutes */
   minutes: number;
+  /**
+   * v2.1 — Friend Focus. When true, the user opted into a friend-gated
+   * session: the friend identified by Schedule.delegation can /approve early
+   * termination. Solo focus (false/undefined) keeps v1 behavior — uncancellable
+   * until the timer elapses.
+   */
+  friendGated?: boolean;
+  /**
+   * v2.1 — Friend Focus. UUIDv4 of the in-flight early-release request awaiting
+   * friend approval. Null whenever none is pending.
+   */
+  pendingReleaseReqId?: string | null;
+  /**
+   * v2.1 — Friend Focus. Most recent decision the friend has issued for this
+   * focus session. Cleared with the focus session when it ends. Distinct from
+   * DelegationState.lastUninstallDecision so a single friend approval doesn't
+   * accidentally green-light both an uninstall AND an early focus release.
+   */
+  lastReleaseDecision?: { reqId: string; verdict: 'approved' | 'denied'; decidedAt: string } | null;
 }
 
 /** Curfew status information */

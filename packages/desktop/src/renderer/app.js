@@ -13,6 +13,10 @@ let countdownInterval = null;
 let selectedFocusMin = 0;
 let focusInterval = null;
 let daemonRunning = false;
+let lockMode = 'self';                 // 'self' | 'friend'
+let friendlockStatus = null;            // last DelegationStatus from main
+let friendlockCountdownInterval = null;
+let friendlockUnsubscribers = [];
 
 // ---------------------------------------------------------------------------
 // Init
@@ -22,11 +26,13 @@ async function init() {
     schedule = await window.nightowl.getSchedule();
     status = await window.nightowl.getStatus();
     const focus = await window.nightowl.getFocus();
+    friendlockStatus = await window.nightowl.friendlock.getStatus();
 
     document.getElementById('loading').classList.add('hidden');
 
     // Check daemon status
     checkDaemonStatus();
+    subscribeFriendlockEvents();
 
     if (focus.active) {
       showFocusActive(focus);
@@ -35,8 +41,15 @@ async function init() {
     } else {
       showEdit();
       setupFocus();
+
+      // If we're mid-pairing (e.g. user closed the app and reopened), resume the modal.
+      if (friendlockStatus.delegated && friendlockStatus.phase &&
+          ['enrolled','paired','awaiting_password'].includes(friendlockStatus.phase)) {
+        resumeFriendlockModal();
+      }
     }
     setupPasswordModal();
+    setupFriendlockModal();
   } catch (error) {
     console.error('Init error:', error);
     document.getElementById('loading').innerHTML = `
@@ -136,6 +149,24 @@ function showEdit() {
   setupPresets();
   setupCopyAll();
   setupLockButton();
+  setupLockModeToggle();
+}
+
+function setupLockModeToggle() {
+  const radios = document.querySelectorAll('input[name="lock-mode"]');
+  radios.forEach(r => {
+    r.addEventListener('change', (e) => {
+      lockMode = e.target.value;
+      // Update the lock button label so the user knows what'll happen on click.
+      const btn = document.getElementById('lock-btn');
+      if (btn) {
+        btn.textContent = lockMode === 'friend' ? '🔒 Set up Friend Lock' : '🔒 Lock It In';
+      }
+    });
+  });
+  // Reflect initial state.
+  const btn = document.getElementById('lock-btn');
+  if (btn) btn.textContent = lockMode === 'friend' ? '🔒 Set up Friend Lock' : '🔒 Lock It In';
 }
 
 function buildDayRows() {
@@ -237,13 +268,22 @@ function setupLockButton() {
     }
     const days = getDaysFromUI();
     // Save schedule first
-    await window.nightowl.saveSchedule({
+    const saveResult = await window.nightowl.saveSchedule({
       days,
       lockPeriodDays: selectedDays,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kathmandu'
     });
-    // Show password modal
-    showPasswordModal();
+    if (!saveResult.ok) {
+      alert(saveResult.error || 'Could not save schedule');
+      return;
+    }
+    schedule = saveResult.schedule;
+
+    if (lockMode === 'friend') {
+      showFriendlockModal('a');
+    } else {
+      showPasswordModal();
+    }
   });
 }
 
@@ -302,6 +342,206 @@ function setupPasswordModal() {
 }
 
 // ---------------------------------------------------------------------------
+// FRIEND LOCK MODAL
+// ---------------------------------------------------------------------------
+function showFriendlockModal(state) {
+  const overlay = document.getElementById('friendlock-overlay');
+  overlay.classList.remove('hidden');
+  showFriendlockState(state);
+  // Backfill the bot-warning chip from whatever the orchestrator already
+  // recorded — drops can happen before the modal is opened (e.g. during a
+  // background poll while the user was on the edit screen).
+  refreshBotWarningChip();
+}
+
+/**
+ * Render the persistent bot-warning chip (id="friendlock-bot-warning") from
+ * the orchestrator's lastBotWarning record. Called on modal open + whenever
+ * a new drop event fires. Hides the chip until the first drop in this
+ * process lifetime.
+ */
+async function refreshBotWarningChip() {
+  const el = document.getElementById('friendlock-bot-warning');
+  if (!el) return;
+  try {
+    const w = await window.nightowl.friendlock.getLastBotWarning();
+    if (!w) {
+      el.classList.add('hidden');
+      el.textContent = '';
+      return;
+    }
+    const ago = Math.max(0, Math.round((Date.now() - w.at) / 1000));
+    el.textContent = `⚠ ${w.reason}  (${ago}s ago)`;
+    el.classList.remove('hidden');
+  } catch (_) {
+    /* getLastBotWarning is best-effort — silently ignore IPC failure */
+  }
+}
+
+function hideFriendlockModal() {
+  document.getElementById('friendlock-overlay').classList.add('hidden');
+  if (friendlockCountdownInterval) {
+    clearInterval(friendlockCountdownInterval);
+    friendlockCountdownInterval = null;
+  }
+}
+
+function showFriendlockState(state) {
+  ['a', 'b', 'c'].forEach(s => {
+    const el = document.getElementById(`friendlock-state-${s}`);
+    if (el) el.classList.toggle('hidden', s !== state);
+  });
+}
+
+function showFriendlockError(state, message) {
+  const errEl = document.getElementById(`friendlock-error-${state}`);
+  if (errEl) {
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+function clearFriendlockError(state) {
+  const errEl = document.getElementById(`friendlock-error-${state}`);
+  if (errEl) errEl.classList.add('hidden');
+}
+
+function setupFriendlockModal() {
+  document.getElementById('friendlock-cancel-a').addEventListener('click', async () => {
+    hideFriendlockModal();
+  });
+
+  document.getElementById('friendlock-generate-btn').addEventListener('click', async () => {
+    clearFriendlockError('a');
+    const btn = document.getElementById('friendlock-generate-btn');
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    try {
+      const res = await window.nightowl.friendlock.enroll();
+      if (!res.ok) {
+        showFriendlockError('a', res.error || 'Could not enroll');
+        btn.disabled = false;
+        btn.textContent = 'Generate Pair Code';
+        return;
+      }
+      renderPairCode(res.pairCode, res.expiresAt);
+      showFriendlockState('b');
+    } catch (e) {
+      showFriendlockError('a', 'Error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Generate Pair Code';
+    }
+  });
+
+  document.getElementById('friendlock-cancel-b').addEventListener('click', async () => {
+    try {
+      await window.nightowl.friendlock.cancelPairing();
+    } catch (e) { /* ignore */ }
+    hideFriendlockModal();
+  });
+}
+
+function renderPairCode(code, expiresAtMs) {
+  // Format like X4P-Q7M-2 for readability (8 chars → 3-3-2)
+  const fmt = `${code.slice(0,3)}-${code.slice(3,6)}-${code.slice(6,8)}`;
+  document.getElementById('friendlock-paircode').textContent = fmt;
+  document.getElementById('friendlock-paircmd').textContent = `/pair ${code}`;
+
+  if (friendlockCountdownInterval) clearInterval(friendlockCountdownInterval);
+  const countdownEl = document.getElementById('friendlock-countdown');
+  const tick = () => {
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      countdownEl.textContent = 'Code expired. Generate a new one.';
+      clearInterval(friendlockCountdownInterval);
+      friendlockCountdownInterval = null;
+      return;
+    }
+    const totalSec = Math.floor(remainingMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    countdownEl.textContent = `Code expires in ${m}:${String(s).padStart(2, '0')}`;
+  };
+  tick();
+  friendlockCountdownInterval = setInterval(tick, 1000);
+}
+
+async function resumeFriendlockModal() {
+  // We're mid-flow from a previous session. Render the appropriate state.
+  // We don't have the original pair code in memory if the bot already paired —
+  // skip B and jump to C (the user just waits for the password).
+  if (friendlockStatus.phase === 'enrolled') {
+    if (friendlockStatus.pairCode && friendlockStatus.pairCodeExpiresAt) {
+      renderPairCode(friendlockStatus.pairCode, friendlockStatus.pairCodeExpiresAt);
+      showFriendlockModal('b');
+    } else {
+      // Restart from scratch — original pair code is gone.
+      showFriendlockModal('a');
+    }
+  } else if (friendlockStatus.phase === 'paired' || friendlockStatus.phase === 'awaiting_password') {
+    showFriendlockModal('c');
+    if (friendlockStatus.friendName) {
+      document.getElementById('friendlock-friend-name').textContent = friendlockStatus.friendName;
+      document.getElementById('friendlock-friend-name-2').textContent = friendlockStatus.friendName;
+    }
+  }
+}
+
+function subscribeFriendlockEvents() {
+  // Clean up any prior subscriptions (e.g. on hot reload during dev).
+  friendlockUnsubscribers.forEach(u => { try { u(); } catch (e) {} });
+  friendlockUnsubscribers = [];
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onPhaseChange(async (phase) => {
+      friendlockStatus = await window.nightowl.friendlock.getStatus();
+      if (phase === 'awaiting_password') {
+        showFriendlockState('c');
+        if (friendlockStatus.friendName) {
+          document.getElementById('friendlock-friend-name').textContent = friendlockStatus.friendName;
+          document.getElementById('friendlock-friend-name-2').textContent = friendlockStatus.friendName;
+        }
+      } else if (phase === 'active') {
+        // Lock just activated — close modal and transition to locked-mode.
+        hideFriendlockModal();
+        schedule = await window.nightowl.getSchedule();
+        status = await window.nightowl.getStatus();
+        document.getElementById('edit-mode').classList.add('hidden');
+        showLocked();
+      } else if (phase === null) {
+        hideFriendlockModal();
+      }
+    })
+  );
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onFriendPaired(({ friendName }) => {
+      const statusEl = document.getElementById('friendlock-status-b');
+      if (statusEl) statusEl.textContent = `Paired with ${friendName}. Asking them to set the password…`;
+    })
+  );
+
+  friendlockUnsubscribers.push(
+    window.nightowl.friendlock.onBotUnreachable(() => {
+      // Surface the error in whichever state is currently open.
+      ['a','b','c'].forEach(s => {
+        const el = document.getElementById(`friendlock-state-${s}`);
+        if (el && !el.classList.contains('hidden')) {
+          showFriendlockError(s, 'Bot unreachable. Check your internet or contact the maintainer — the hosted Worker may be down. (see RUNBOOK.md §8)');
+        }
+      });
+    })
+  );
+
+  if (window.nightowl.friendlock.onBotWarning) {
+    friendlockUnsubscribers.push(
+      window.nightowl.friendlock.onBotWarning(() => refreshBotWarningChip())
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // LOCKED MODE
 // ---------------------------------------------------------------------------
 function showLocked() {
@@ -309,20 +549,38 @@ function showLocked() {
   document.getElementById('edit-mode').classList.add('hidden');
   updateLockedUI();
   buildTimeline();
+  setupUninstallCard();
+  refreshUninstallCard();
 
   if (countdownInterval) clearInterval(countdownInterval);
   countdownInterval = setInterval(async () => {
     status = await window.nightowl.getStatus();
+    // Refresh schedule too — delegation.phase, friendRevokedAt, lastUninstallDecision
+    // can all change under us when the bot pushes signed messages. Without this
+    // the locked-screen UI stays frozen at the snapshot taken when showLocked() ran.
+    schedule = await window.nightowl.getSchedule();
     if (!status.active || !status.locked) {
       clearInterval(countdownInterval);
       location.reload();
       return;
     }
     updateLockedUI();
+    refreshUninstallCard();
   }, 1000);
 }
 
 function updateLockedUI() {
+  // Delegation badge
+  const badge = document.getElementById('delegation-badge');
+  if (badge) {
+    if (schedule.delegation && schedule.delegation.friendName) {
+      badge.textContent = `🔒 Locked by ${schedule.delegation.friendName}`;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  }
+
   // End date
   if (schedule.lockEndDate) {
     const end = new Date(schedule.lockEndDate);
@@ -445,6 +703,20 @@ function setupFocus() {
     });
   }
 
+  // Friend Focus toggle — only shown when a delegation/pairing exists. Without
+  // a paired friend the option is meaningless (nobody to /approve), so we
+  // hide it instead of showing a disabled checkbox.
+  const friendToggle = document.getElementById('focus-friend-toggle');
+  const friendNameSpan = document.getElementById('focus-friend-name');
+  if (friendToggle) {
+    if (schedule && schedule.delegation && schedule.delegation.friendName) {
+      friendToggle.classList.remove('hidden');
+      if (friendNameSpan) friendNameSpan.textContent = schedule.delegation.friendName;
+    } else {
+      friendToggle.classList.add('hidden');
+    }
+  }
+
   const focusStartBtn = document.getElementById('focus-start-btn');
   if (focusStartBtn) {
     focusStartBtn.addEventListener('click', async () => {
@@ -453,8 +725,9 @@ function setupFocus() {
         alert('Daemon not running. Install it first or your focus session will not enforce.');
         return;
       }
+      const friendGated = !!document.getElementById('focus-friend-checkbox')?.checked;
       try {
-        const result = await window.nightowl.startFocus({ minutes: selectedFocusMin });
+        const result = await window.nightowl.startFocus({ minutes: selectedFocusMin, friendGated });
         if (result.ok) {
           showFocusActive(result.focus);
         } else {
@@ -471,6 +744,10 @@ function showFocusActive(focus) {
   document.getElementById('edit-mode').classList.add('hidden');
   document.getElementById('locked-mode').classList.add('hidden');
   document.getElementById('focus-mode').classList.remove('hidden');
+
+  // Friend Focus card — show only for friend-gated sessions.
+  setupFocusReleaseCard();
+  refreshFocusReleaseCard(focus);
 
   const endTime = new Date(focus.endTime).getTime();
   const startTime = new Date(focus.startTime).getTime();
@@ -489,7 +766,17 @@ function showFocusActive(focus) {
       `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
     document.getElementById('focus-progress-fill').style.width = `${pct}%`;
 
-    if (remaining <= 0) {
+    // Refresh the friend-release card every tick so /approve from Telegram
+    // surfaces within ~1s of dispatch (and so a friend's early-release
+    // approval flips the card from "Waiting…" to "End focus now").
+    const liveFocus = await window.nightowl.getFocus();
+    if (liveFocus && !liveFocus.active) {
+      // Either timer expired OR user clicked End focus now from the card.
+      // Either way, we're done — fall through to the standard "Done" branch.
+    }
+    refreshFocusReleaseCard(liveFocus || focus);
+
+    if (remaining <= 0 || (liveFocus && !liveFocus.active)) {
       clearInterval(focusInterval);
       document.getElementById('focus-timer').textContent = 'Done!';
       document.getElementById('focus-label').textContent = 'Focus session complete';
@@ -499,6 +786,330 @@ function showFocusActive(focus) {
       }, 3000);
     }
   }, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// FRIEND LOCK — uninstall card on the locked screen
+// ---------------------------------------------------------------------------
+let uninstallCardWired = false;
+
+function setupUninstallCard() {
+  if (uninstallCardWired) return;
+  uninstallCardWired = true;
+
+  document.getElementById('friendlock-ask-friend-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.requestUninstall();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not send the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (r.result === 'no_friend') {
+      errEl.textContent = 'Your friend has not paired yet — nothing to ask.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
+  document.getElementById('friendlock-cancel-request-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.cancelPendingUninstallRequest();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not cancel the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
+  document.getElementById('friendlock-emergency-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm(
+      'Start the 72-hour emergency cooldown?\n\nThis CANNOT be cancelled. After 72 hours, NightOwl will let you uninstall without your friend.\n\nUse this only if you genuinely need to escape the lock.'
+    );
+    if (!ok) return;
+    const r = await window.nightowl.friendlock.startEmergencyCooldown();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not start cooldown';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    refreshUninstallCard();
+  };
+
+  document.getElementById('friendlock-uninstall-now-btn').onclick = async () => {
+    const errEl = document.getElementById('friendlock-uninstall-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm('Uninstall NightOwl daemon now? This ends the lock.');
+    if (!ok) return;
+    // password param ignored for delegated uninstall path
+    const r = await window.nightowl.uninstallDaemon({ password: '' });
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Uninstall failed';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    location.reload();
+  };
+
+  // Live updates from main when a decision arrives or cooldown ticks.
+  if (window.nightowl.friendlock.onUninstallDecision) {
+    window.nightowl.friendlock.onUninstallDecision(() => refreshUninstallCard());
+  }
+  if (window.nightowl.friendlock.onEmergencyCooldownChanged) {
+    window.nightowl.friendlock.onEmergencyCooldownChanged(() => refreshUninstallCard());
+  }
+}
+
+async function refreshUninstallCard() {
+  const card = document.getElementById('friendlock-uninstall-card');
+  if (!card) return;
+
+  // Show only when delegated. For self-set locks, the existing password-only
+  // uninstall path is fine and lives outside this card.
+  if (!schedule || !schedule.delegation) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  // Friend name in the button label.
+  const nameEl = document.getElementById('friendlock-ask-friend-name');
+  if (nameEl) nameEl.textContent = schedule.delegation.friendName || 'friend';
+
+  let gateStatus;
+  try {
+    gateStatus = await window.nightowl.friendlock.getUninstallGate();
+  } catch (e) {
+    return;
+  }
+
+  const stateEl = document.getElementById('friendlock-uninstall-state');
+  const askBtn = document.getElementById('friendlock-ask-friend-btn');
+  const cancelBtn = document.getElementById('friendlock-cancel-request-btn');
+  const emergBtn = document.getElementById('friendlock-emergency-btn');
+  const nowBtn = document.getElementById('friendlock-uninstall-now-btn');
+
+  // Reset every per-button bit so each tick computes a clean state. Without
+  // this, e.g. `disabled = true; textContent = "Request pending…"` set on the
+  // ask button when a request was in flight would persist across the deny that
+  // came back, leaving the button stuck and unclickable.
+  stateEl.className = 'uninstall-state';
+  askBtn.classList.remove('hidden');
+  askBtn.disabled = false;
+  askBtn.textContent = `Ask ${schedule.delegation.friendName || 'friend'} to release`;
+  cancelBtn.classList.add('hidden');
+  emergBtn.classList.remove('hidden');
+  emergBtn.disabled = false;
+  emergBtn.textContent = 'Start 72h emergency cooldown';
+  nowBtn.classList.add('hidden');
+
+  // Cooldown in flight?
+  if (gateStatus.emergencyCooldownStartedAt) {
+    const remainingMs = gateStatus.emergencyCooldownRemainingMs;
+    if (remainingMs > 0) {
+      stateEl.classList.add('cooldown');
+      stateEl.textContent = `Emergency cooldown in progress — ${formatHoursLeft(remainingMs)} remaining. NightOwl will allow uninstall when it elapses.`;
+      emergBtn.disabled = true;
+      emergBtn.textContent = 'Emergency cooldown in flight';
+    } else {
+      stateEl.classList.add('allowed');
+      stateEl.textContent = 'Emergency cooldown elapsed. You may uninstall now.';
+      emergBtn.classList.add('hidden');
+      askBtn.classList.add('hidden');
+      nowBtn.classList.remove('hidden');
+    }
+    return;
+  }
+
+  // Friend revoked? Two sub-cases — with or without a prior approval.
+  // Past approvals stand: /revoke is forward-looking, the friend cannot
+  // unilaterally retract a previously-issued approval (would defang the
+  // asymmetry under social pressure). So if verdict was approved BEFORE
+  // revoke, the user can still uninstall — just surface that the friend
+  // has stepped away in addition to the prior approval.
+  if (schedule.delegation.phase === 'revoked') {
+    askBtn.classList.add('hidden');
+    if (gateStatus.lastDecisionVerdict === 'approved') {
+      stateEl.classList.add('allowed');
+      stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} approved your earlier request and has now stepped away from this lock. Their approval still stands — you may uninstall now.`;
+      emergBtn.classList.add('hidden');
+      nowBtn.classList.remove('hidden');
+    } else {
+      stateEl.classList.add('denied');
+      stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} stepped away from this lock. They will not approve uninstall — start the 72h emergency cooldown to escape.`;
+    }
+    return;
+  }
+
+  // Pending request?
+  if (gateStatus.pendingUninstallReqId && !gateStatus.lastDecisionVerdict) {
+    stateEl.textContent = `Waiting for ${schedule.delegation.friendName || 'your friend'} to /approve or /deny in Telegram.`;
+    askBtn.disabled = true;
+    askBtn.textContent = 'Request pending…';
+    cancelBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Most recent decision was deny?
+  if (gateStatus.lastDecisionVerdict === 'denied') {
+    stateEl.classList.add('denied');
+    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} denied your last request. Try again or start the 72h emergency cooldown.`;
+    return;
+  }
+
+  // Approved?
+  if (gateStatus.gate.allowed) {
+    stateEl.classList.add('allowed');
+    stateEl.textContent = `${schedule.delegation.friendName || 'Your friend'} approved your uninstall request. You may uninstall now.`;
+    askBtn.classList.add('hidden');
+    emergBtn.classList.add('hidden');
+    nowBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Default: nothing in flight.
+  stateEl.textContent = 'No request in flight. Click "Ask … to release" to send your friend an /approve|/deny prompt on Telegram.';
+}
+
+function formatHoursLeft(ms) {
+  if (ms <= 0) return '0h 0m';
+  const totalMin = Math.ceil(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h <= 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+// ---------------------------------------------------------------------------
+// FRIEND FOCUS — early-release card on the active focus screen (M7)
+// ---------------------------------------------------------------------------
+let focusReleaseCardWired = false;
+
+function setupFocusReleaseCard() {
+  if (focusReleaseCardWired) return;
+  focusReleaseCardWired = true;
+
+  document.getElementById('focus-ask-friend-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.requestFocusRelease();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not send the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (r.result === 'no_friend') {
+      errEl.textContent = 'Your friend has not paired yet — nothing to ask.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const liveFocus = await window.nightowl.getFocus();
+    refreshFocusReleaseCard(liveFocus);
+  };
+
+  document.getElementById('focus-cancel-request-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const r = await window.nightowl.friendlock.cancelPendingFocusRelease();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not cancel the request';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const liveFocus = await window.nightowl.getFocus();
+    refreshFocusReleaseCard(liveFocus);
+  };
+
+  document.getElementById('focus-end-now-btn').onclick = async () => {
+    const errEl = document.getElementById('focus-release-error');
+    errEl.classList.add('hidden');
+    const ok = window.confirm('End the focus session now?');
+    if (!ok) return;
+    const r = await window.nightowl.friendlock.endFocusEarly();
+    if (!r.ok) {
+      errEl.textContent = r.error || 'Could not end focus';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    // The 1s focus tick will see active=false and run the "Done" sequence.
+  };
+
+  if (window.nightowl.friendlock.onFocusReleaseDecision) {
+    window.nightowl.friendlock.onFocusReleaseDecision(async () => {
+      const liveFocus = await window.nightowl.getFocus();
+      refreshFocusReleaseCard(liveFocus);
+    });
+  }
+}
+
+async function refreshFocusReleaseCard(focus) {
+  const card = document.getElementById('focus-release-card');
+  if (!card) return;
+
+  // Solo focus → don't show the card at all. Same for ended/missing sessions.
+  if (!focus || !focus.active || !focus.friendGated) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  let gateStatus;
+  try {
+    gateStatus = await window.nightowl.friendlock.getFocusReleaseGate();
+  } catch (e) {
+    return;
+  }
+
+  const stateEl = document.getElementById('focus-release-state');
+  const askBtn = document.getElementById('focus-ask-friend-btn');
+  const cancelBtn = document.getElementById('focus-cancel-request-btn');
+  const endNowBtn = document.getElementById('focus-end-now-btn');
+  const nameSpan = document.getElementById('focus-ask-friend-name');
+
+  const friendName = gateStatus.friendName || 'friend';
+  if (nameSpan) nameSpan.textContent = friendName;
+
+  // Reset every per-button bit each tick so previous states don't stick.
+  stateEl.className = 'uninstall-state';
+  askBtn.classList.remove('hidden');
+  askBtn.disabled = false;
+  askBtn.textContent = `Ask ${friendName} to release`;
+  cancelBtn.classList.add('hidden');
+  endNowBtn.classList.add('hidden');
+
+  // Pending request?
+  if (gateStatus.pendingReleaseReqId && !gateStatus.lastDecisionVerdict) {
+    stateEl.textContent = `Waiting for ${friendName} to /approve or /deny in Telegram.`;
+    askBtn.disabled = true;
+    askBtn.textContent = 'Request pending…';
+    cancelBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Most recent decision was deny?
+  if (gateStatus.lastDecisionVerdict === 'denied') {
+    stateEl.classList.add('denied');
+    stateEl.textContent = `${friendName} denied your last request. Try again or wait the timer out.`;
+    return;
+  }
+
+  // Approved → show End focus now.
+  if (gateStatus.gate.allowed) {
+    stateEl.classList.add('allowed');
+    stateEl.textContent = `${friendName} approved your release. You may end the focus session now.`;
+    askBtn.classList.add('hidden');
+    endNowBtn.classList.remove('hidden');
+    return;
+  }
+
+  // Default: nothing in flight.
+  stateEl.textContent = `Click "Ask ${friendName} to release" to send your friend an /approve|/deny prompt on Telegram.`;
 }
 
 // ---------------------------------------------------------------------------
